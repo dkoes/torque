@@ -130,10 +130,7 @@
 #include "pbs_nodes.h"
 #include "work_task.h"
 #include "mcom.h"
-#include "../lib/Libattr/attr_node_func.h" /* free_prop_list */
 #include "node_func.h" /* init_prop, find_nodebyname, reinitialize_node_iterator, recompute_ntype_cnts, effective_node_delete, create_pbs_node */
-#include "node_manager.h" /* setup_notification */
-#include "../lib/Libutils/u_lock_ctl.h" /* unlock_node */
 #include "queue_func.h" /* find_queuebyname, que_alloc, que_free */
 #include "queue_recov.h" /* que_save */
 #include "mutex_mgr.hpp"
@@ -184,11 +181,14 @@ int mgr_modify_node(
   pbs_attribute   *new_attr;
   pbs_attribute   *unused = NULL;
   pbs_attribute   *pnew;
+  bool             dont_update_nodes = false;
 
   if (plist == NULL)
     {
     return(0);  /* nothing to do, return success */
     }
+  
+  get_svr_attr_b(SRV_ATR_DontWriteNodesFile, &dont_update_nodes);
 
   /* Get heap space for a temporary node-pbs_attribute array and use the
    * various "node-attribute action" functions defined in the file
@@ -215,7 +215,15 @@ int mgr_modify_node(
    * return code (rc) shapes caller's reply
    */
 
-  if ((rc = attr_atomic_node_set(plist, unused, new_attr, pdef, limit, -1, privil, bad)) != 0)
+  if ((rc = attr_atomic_node_set(plist,
+                                 unused,
+                                 new_attr,
+                                 pdef,
+                                 limit,
+                                 -1,
+                                 privil,
+                                 bad,
+                                 dont_update_nodes)) != 0)
     {
     attr_atomic_kill(new_attr, pdef, limit);
 
@@ -248,7 +256,7 @@ int mgr_modify_node(
           break;
         case ND_ATR_requestid:
           {
-          *(*ppnode)->nd_requestid = pnew->at_val.at_str;
+          (*ppnode)->nd_requestid = pnew->at_val.at_str;
           rc = PBSE_NONE;
           }
           break;
@@ -268,6 +276,16 @@ int mgr_modify_node(
         case ND_ATR_gpustatus:
         case ND_ATR_mics:
         case ND_ATR_micstatus:
+#ifdef PENABLE_LINUX_CGROUPS
+        case ND_ATR_total_sockets:
+        case ND_ATR_total_numa_nodes:
+        case ND_ATR_total_cores:
+        case ND_ATR_total_threads:
+        case ND_ATR_dedicated_sockets:
+        case ND_ATR_dedicated_numa_nodes:
+        case ND_ATR_dedicated_cores:
+        case ND_ATR_dedicated_threads:
+#endif
         default:
           rc = PBSE_IVALREQ;
           break;
@@ -366,7 +384,7 @@ void mgr_node_modify(
 
     if(pnode != NULL)
       {
-      unlock_node(pnode, "mgr_node_set", (char *)"error", LOGLEVEL);
+      pnode->unlock_node(__func__, "error", LOGLEVEL);
       pnode = NULL;
       }
 
@@ -383,7 +401,7 @@ void mgr_node_modify(
 
   if(pnode != NULL)
     {
-    unlock_node(pnode, "mgr_node_set", (char *)"single_node", LOGLEVEL);
+    pnode->unlock_node(__func__, "single_node", LOGLEVEL);
     pnode = NULL;
     }
 

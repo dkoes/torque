@@ -200,47 +200,51 @@
 
 /* additional queue attributes names */
 
-#define ATTR_aclgren    "acl_group_enable"
-#define ATTR_aclgroup   "acl_groups"
-#define ATTR_aclhten    "acl_host_enable"
-#define ATTR_aclhost    "acl_hosts"
-#define ATTR_acluren    "acl_user_enable"
-#define ATTR_acluser    "acl_users"
-#define ATTR_altrouter  "alt_router"
-#define ATTR_checkpoint_min  "checkpoint_min"
+#define ATTR_aclgren              "acl_group_enable"
+#define ATTR_aclgroup             "acl_groups"
+#define ATTR_aclhten              "acl_host_enable"
+#define ATTR_aclhost              "acl_hosts"
+#define ATTR_acluren              "acl_user_enable"
+#define ATTR_acluser              "acl_users"
+#define ATTR_altrouter            "alt_router"
+#define ATTR_checkpoint_min       "checkpoint_min"
 #define ATTR_checkpoint_defaults  "checkpoint_defaults"
-#define ATTR_enable     "enabled"
-#define ATTR_fromroute  "from_route_only"
-#define ATTR_hostlist    "hostlist"         /* TORQUE only */
-#define ATTR_killdelay   "kill_delay"
-#define ATTR_maxgrprun   "max_group_run"
-#define ATTR_maxque      "max_queuable"
-#define ATTR_maxuserque  "max_user_queuable"
-#define ATTR_maxuserrun  "max_user_run"
-#define ATTR_qtype       "queue_type"
-#define ATTR_rescassn    "resources_assigned"
-#define ATTR_rescdflt    "resources_default"
-#define ATTR_rescmax     "resources_max"
-#define ATTR_rescmin     "resources_min"
-#define ATTR_featreqd    "features_required"
-#define ATTR_req_login_property "required_login_property"
-#define ATTR_rerunnable  "restartable"      /* TORQUE only */
-#define ATTR_rndzretry   "rendezvous_retry"
-#define ATTR_routedest   "route_destinations"
-#define ATTR_routeheld   "route_held_jobs"
-#define ATTR_routewait   "route_waiting_jobs"
-#define ATTR_routeretry  "route_retry_time"
-#define ATTR_routelife   "route_lifetime"
-#define ATTR_rsvexpdt    "reserved_expedite"
-#define ATTR_rsvsync     "reserved_sync"
-#define ATTR_start       "started"
-#define ATTR_count       "state_count"
-#define ATTR_number      "number_jobs"
-#define ATTR_acllogic    "acl_logic_or"
-#define ATTR_aclgrpslpy  "acl_group_sloppy"
-#define ATTR_keepcompleted "keep_completed"
-#define ATTR_disallowedtypes "disallowed_types"
-#define ATTR_is_transit  "is_transit"
+#define ATTR_enable               "enabled"
+#define ATTR_fromroute            "from_route_only"
+#define ATTR_hostlist             "hostlist"         /* TORQUE only */
+#define ATTR_killdelay            "kill_delay"
+#define ATTR_maxgrprun            "max_group_run"
+#define ATTR_maxque               "max_queuable"
+#define ATTR_maxuserque           "max_user_queuable"
+#define ATTR_maxuserrun           "max_user_run"
+#define ATTR_qtype                "queue_type"
+#define ATTR_rescassn             "resources_assigned"
+#define ATTR_rescdflt             "resources_default"
+#define ATTR_rescmax              "resources_max"
+#define ATTR_rescmin              "resources_min"
+#define ATTR_featreqd             "features_required"
+#define ATTR_req_login_property   "required_login_property"
+#define ATTR_rerunnable           "restartable"      /* TORQUE only */
+#define ATTR_rndzretry            "rendezvous_retry"
+#define ATTR_routedest            "route_destinations"
+#define ATTR_routeheld            "route_held_jobs"
+#define ATTR_routewait            "route_waiting_jobs"
+#define ATTR_routeretry           "route_retry_time"
+#define ATTR_routelife            "route_lifetime"
+#define ATTR_rsvexpdt             "reserved_expedite"
+#define ATTR_rsvsync              "reserved_sync"
+#define ATTR_start                "started"
+#define ATTR_count                "state_count"
+#define ATTR_number               "number_jobs"
+#define ATTR_acllogic             "acl_logic_or"
+#define ATTR_aclgrpslpy           "acl_group_sloppy"
+#define ATTR_keepcompleted        "keep_completed"
+#define ATTR_disallowedtypes      "disallowed_types"
+#define ATTR_is_transit           "is_transit"
+#define ATTR_req_infomax          "req_information_max"
+#define ATTR_req_infomin          "req_information_min"
+#define ATTR_req_infodefault      "req_information_default"
+#define ATTR_ghost_queue          "ghost_queue"
 
 /* additional server attributes names */
 
@@ -254,10 +258,12 @@
 */
 
 #define ATTR_aclroot     "acl_roots"
+#define ATTR_gresmodifiers "gres_modifiers"
 #define ATTR_managers    "managers"
 #define ATTR_dfltque     "default_queue"
 #define ATTR_dispsvrsuffix "display_job_server_suffix"
 #define ATTR_jobsuffixalias "job_suffix_alias"
+#define ATTR_usejobssubdirs "use_jobs_subdirs"
 #define ATTR_defnode     "default_node"
 #define ATTR_locsvrs     "location_servers"
 #define ATTR_logevents   "log_events"
@@ -279,6 +285,7 @@
 #define ATTR_tcptimeout  "tcp_timeout"
 #define ATTR_jobstatrate "job_stat_rate"
 #define ATTR_polljobs    "poll_jobs"
+#define ATTR_note_append_on_error   "note_append_on_error"
 #define ATTR_downonerror "down_on_error"
 #define ATTR_disableserveridcheck "disable_server_id_check"
 #define ATTR_jobnanny    "job_nanny"
@@ -332,32 +339,65 @@
 #define ATTR_automaticrequeueexitcode "automatic_requeue_exit_code"
 #define ATTR_jobsynctimeout           "job_sync_timeout"
 #define ATTR_pass_cpu_clock           "pass_cpu_clock"
+#define ATTR_request_version          "request_version"
+#define ATTR_req_information          "req_information"
+/* additional node "attributes" names */
+
+#define ATTR_NODE_state                "state"
+#define ATTR_NODE_power_state          "power_state"
+#define ATTR_NODE_np                   "np"
+#define ATTR_NODE_properties           "properties"
+#define ATTR_NODE_ntype                "ntype"
+#define ATTR_NODE_jobs                 "jobs"
+#define ATTR_NODE_status               "status"
+#define ATTR_NODE_note                 "note"
+#define ATTR_NODE_mom_port	           "mom_service_port"
+#define ATTR_NODE_mom_rm_port          "mom_manager_port" 
+#define ATTR_NODE_num_node_boards      "num_node_boards"
+#define ATTR_NODE_numa_str             "numa_board_str"
+#define ATTR_NODE_gpus                 "gpus"
+#define ATTR_NODE_gpustatus            "gpu_status"
+#define ATTR_NODE_gpus_str             "numa_gpu_node_str"
+#define ATTR_NODE_mics                 "mics"
+#define ATTR_NODE_micstatus            "mic_status"
+#ifdef PENABLE_LINUX_CGROUPS
+#define ATTR_NODE_total_sockets        "total_sockets"
+#define ATTR_NODE_total_numa_nodes     "total_numa_nodes"
+#define ATTR_NODE_total_cores          "total_cores"
+#define ATTR_NODE_total_threads        "total_threads"
+#define ATTR_NODE_dedicated_sockets    "dedicated_sockets"
+#define ATTR_NODE_dedicated_numa_nodes "dedicated_numa_nodes"
+#define ATTR_NODE_dedicated_cores      "dedicated_cores"
+#define ATTR_NODE_dedicated_threads    "dedicated_threads"
+#endif
+
 #define ATTR_job_full_report_time     "job_full_report_time"
 /* additional node "attributes" names */
 
-#define ATTR_NODE_state            "state"
-#define ATTR_NODE_power_state      "power_state"
-#define ATTR_NODE_np               "np"
-#define ATTR_NODE_properties       "properties"
-#define ATTR_NODE_ntype            "ntype"
-#define ATTR_NODE_jobs             "jobs"
-#define ATTR_NODE_status           "status"
-#define ATTR_NODE_note             "note"
-#define ATTR_NODE_mom_port	       "mom_service_port"
-#define ATTR_NODE_mom_rm_port      "mom_manager_port" 
-#define ATTR_NODE_num_node_boards  "num_node_boards"
-#define ATTR_NODE_numa_str         "numa_board_str"
-#define ATTR_NODE_gpus             "gpus"
-#define ATTR_NODE_gpustatus        "gpu_status"
-#define ATTR_NODE_gpus_str         "numa_gpu_node_str"
-#define ATTR_NODE_mics             "mics"
-#define ATTR_NODE_micstatus        "mic_status"
 #define ATTR_NODE_ttl              "TTL"
 #define ATTR_NODE_acl              "acl"
 #define ATTR_NODE_requestid        "requestid"
 
-#define ATTR_copy_on_rerun         "copy_on_rerun"
-#define ATTR_job_exclusive_on_use   "job_exclusive_on_use"
+#define ATTR_cpustr                    "cpuset_string"
+#define ATTR_memstr                    "memset_string"
+#define ATTR_user_kill_delay           "user_kill_delay"
+#define ATTR_idle_slot_limit           "idle_slot_limit"
+#define ATTR_default_gpu_mode          "default_gpu_mode"
+#define ATTR_copy_on_rerun             "copy_on_rerun"
+#define ATTR_job_exclusive_on_use      "job_exclusive_on_use"
+#define ATTR_disable_automatic_requeue "disable_automatic_requeue"
+#define ATTR_exitcodecanceledjob       "exit_code_canceled_job"
+#define ATTR_timeoutforjobdelete       "timeout_for_job_delete"
+#define ATTR_timeoutforjobrequeue      "timeout_for_job_requeue"
+#define ATTR_dontwritenodesfile        "dont_write_nodes_file"
+#define ATTR_aclusershosts              "acl_user_hosts"
+#define ATTR_aclgroupshosts             "acl_group_hosts"
+#define ATTR_nodesubmitexceptions       "node_submit_exceptions"
+#define ATTR_legacy_vmem                "legacy_vmem"
+#define ATTR_email_batch_seconds        "email_batch_seconds"
+#define ATTR_tcpincomingtimeout        "tcp_incoming_timeout"
+#define ATTR_ghost_array_recovery      "ghost_array_recovery"
+#define ATTR_cgroup_per_task           "cgroup_per_task"
 
 /* notification email formating */
 #define ATTR_mailsubjectfmt "mail_subject_fmt"
@@ -477,8 +517,6 @@
 #ifndef MAXNAMLEN
 #define MAXNAMLEN  255
 #endif
-#define MAX_NOTE  256 /* max node note length */
-#define MAX_NOTE_STR  "256" /* max node note length as a string literal (this MUST match MAX_NOTE) */
 
 #define PBS_MAXUSER  32 /* max user name length */
 #define PBS_MAXGRPN  16 /* max group name length */
@@ -553,7 +591,7 @@
 
 #define NO_MOM_RELAY 1
 
-enum batch_op { SET, UNSET, INCR, DECR, EQ, NE, GE, GT, LE, LT, DFLT, MERGE, INCR_OLD };
+enum batch_op { SET, UNSET, INCR, DECR, EQ, NE, GE, GT, LE, LT, DFLT, MERGE, INCR_OLD, SET_PLUGIN };
 
 /* ALPS nppcu values */
 enum nppcu_values { NPPCU_ALPS_CHOOSES = 0, NPPCU_NO_USE_HT, NPPCU_USE_HT };

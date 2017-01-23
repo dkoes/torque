@@ -3,18 +3,22 @@
 #include "license_pbs.h" /* See here for the software license */
 #include "queue.h" /* pbs_queue */
 #include "batch_request.h"
+#include "get_path_jobdata.h"
+
+#include <string>
 
 /*
  * misc server function prototypes
  */
 
+int get_svr_attr_b(int index, bool *b);
 int get_svr_attr_l(int index, long *l);
 int get_svr_attr_str(int index, char **str);
 int get_svr_attr_arst(int index, struct array_strings **arst);
 
 extern int   chk_hold_priv(long hold, int priv);
 extern void  get_jobowner(char *from, char *to); 
-extern char *parse_servername(char *, unsigned int *);
+extern char *parse_servername(const char *, unsigned int *);
 extern void  process_Areply(int);
 extern void  *mom_process_request(void *);
 extern void  process_dis_request(int);
@@ -39,8 +43,8 @@ int is_svr_attr_set(int);
 int set_svr_attr(int, void *);
 
 #ifdef PBS_JOB_H
-extern int   set_nodes(job *, char *, int, char **, char **, char *, char *);
-extern void  free_nodes(job *);
+extern int   set_nodes(job *, const char *, int, std::string &, std::string &, char *, char *);
+extern void  free_nodes(job *, const char *spec = NULL);
 #endif /* PBS_JOB_H */
 
 #ifdef ATTRIBUTE_H

@@ -87,6 +87,7 @@
 #include "list_link.h"
 #include "attribute.h"
 #include "pbs_error.h"
+#include "pbs_helper.h"
 
 /*
  * This file contains general functions for manipulating attributes.
@@ -128,11 +129,8 @@ void clear_attr(
 
   pattr->at_type = pdef->at_type;
 
-  if ((pattr->at_type == ATR_TYPE_RESC) ||
-      (pattr->at_type == ATR_TYPE_LIST))
-    {
+  if (pattr->at_type == ATR_TYPE_LIST)
     CLEAR_HEAD(pattr->at_val.at_list);
-    }
 
   return;
   }  /*END clear_attr() */
@@ -226,6 +224,23 @@ long attr_ifelse_long(
 
 
 
+bool attr_ifelse_bool(
+
+  pbs_attribute *attr1,
+  pbs_attribute *attr2,
+  bool           defbool)
+
+  {
+  if (attr1->at_flags & ATR_VFLAG_SET)
+    return(attr1->at_val.at_bool);
+  else if (attr2->at_flags & ATR_VFLAG_SET)
+    return(attr2->at_val.at_bool);
+  else
+    return(defbool);
+  }
+
+
+
 /*
  * free_null - A free routine for attributes which do not
  * have calloc-ed space ( boolean, char, long ).
@@ -262,7 +277,7 @@ void free_null(
 
 void free_noop(
 
-  pbs_attribute *attr)
+  pbs_attribute * UNUSED(attr))
 
   {
   /* no nothing */
@@ -280,8 +295,8 @@ void free_noop(
 
 int comp_null(
 
-  pbs_attribute *attr,   /* I */
-  pbs_attribute *with)   /* I */
+  pbs_attribute * UNUSED(attr),   /* I */
+  pbs_attribute * UNUSED(with))   /* I */
 
   {
   /* SUCCESS */
@@ -419,7 +434,6 @@ void free_attrlist(
     {
     nxpal = (struct svrattrl *)GET_NEXT(pal->al_link);
     delete_link(&pal->al_link);
-    memset(pal, 254, sizeof(svrattrl));
     (void)free(pal);
     pal = nxpal;
     }

@@ -92,6 +92,7 @@
 #include "server_limits.h"
 #include "pbs_job.h"
 #include "pbs_error.h"
+#include "pbs_helper.h"
 
 #define HOLD_ENCODE_SIZE 3
 
@@ -110,10 +111,10 @@
 int decode_hold(
 
   pbs_attribute *patr,
-  const char   *name,  /* pbs_attribute name */
-  const char *rescn,  /* resource name - unused here */
+  const char * UNUSED(name),  /* pbs_attribute name */
+  const char * UNUSED(rescn),  /* resource name - unused here */
   const char    *val,  /* pbs_attribute value */
-  int            perm) /* only used for resources */
+  int          UNUSED(perm)) /* only used for resources */
 
   {
   const char  *pc;
@@ -174,8 +175,8 @@ int encode_hold(
   tlist_head     *phead,  /* head of attrlist */
   const char    *atname, /* name of pbs_attribute */
   const char    *rsname, /* resource name or null */
-  int             mode,   /* encode mode, unused here */
-  int             perm)   /* only used for resources */
+  int            UNUSED(mode),   /* encode mode, unused here */
+  int            UNUSED(perm))   /* only used for resources */
 
 
   {
@@ -237,3 +238,53 @@ int comp_hold(
   else
     return 1;
   }
+
+
+
+/*
+ * set_hold()
+ *
+ * Hold is a bitmap, so this treats it as one
+ * @param attr - the attribute we're "setting"
+ * @param new_attr - the attribute we're "setting" from
+ * "setting" is quoted because we set, increment, and decrement
+ * @param op - which operation we're performing
+ * @return PBSE_NONE unless op is invalid, that gets PBSE_INTERNAL
+ */
+
+int set_hold(
+
+  pbs_attribute *attr,
+  pbs_attribute *new_attr,
+  enum batch_op  op)
+
+  {
+  assert(attr && new_attr && (new_attr->at_flags & ATR_VFLAG_SET));
+
+  switch (op)
+    {
+    case SET:
+
+      attr->at_val.at_long = new_attr->at_val.at_long;
+      break;
+
+    case INCR:
+
+      attr->at_val.at_long |= new_attr->at_val.at_long;
+      break;
+
+    case DECR:
+
+      attr->at_val.at_long &= ~new_attr->at_val.at_long;
+      break;
+
+    default:
+
+      return(PBSE_INTERNAL);
+
+    }
+  
+  attr->at_flags |= ATR_VFLAG_SET | ATR_VFLAG_MODIFY;
+
+  return(PBSE_NONE);
+  } // END set_hold()

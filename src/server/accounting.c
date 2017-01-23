@@ -1,3 +1,4 @@
+
 /*
 *         OpenPBS (Portable Batch System) v2.3 Software License
 *
@@ -111,6 +112,7 @@
 #include "svrfunc.h"
 #include "server.h"
 #include "utils.h"
+#include "policy_values.h"
 
 /* Local Data */
 
@@ -144,7 +146,6 @@ int acct_job(
   std::string&    ds)   /* O */
 
   {
-  long        cray_enabled = FALSE;
   int         resc_access_perm = READ_ONLY;
   char        local_buf[MAXLINE*4];
   pbs_queue  *pque;
@@ -237,8 +238,7 @@ int acct_job(
     ds += " ";
     }
 
-  get_svr_attr_l(SRV_ATR_CrayEnabled, &cray_enabled);
-  if ((cray_enabled == TRUE) &&
+  if ((cray_enabled == true) &&
       (pjob->ji_wattr[JOB_ATR_login_node_id].at_flags & ATR_VFLAG_SET))
     {
     ds += "login_node=";
@@ -413,8 +413,6 @@ void acct_close(
 
 
 
-
-
 /*
  * account_record - write basic accounting record
  */
@@ -522,14 +520,20 @@ void add_procs_and_nodes_used(
       std::size_t      plus = nodelist.find("+", pos);
       std::string      host(nodelist.substr(pos, plus - pos));
       std::size_t      slash = host.find("/");
-      std::string      range(host.substr(slash + 1));
+      std::string      range;
       std::vector<int> indices;
 
-      // remove the /<index>
-      host.erase(slash);
+      // remove the /<index> if it exists
+      if (slash != std::string::npos)
+        {
+        range = host.substr(slash + 1);
+        host.erase(slash);
 
-      translate_range_string_to_vector(range.c_str(), indices);
-      total_execution_slots += indices.size();
+        translate_range_string_to_vector(range.c_str(), indices);
+        total_execution_slots += indices.size();
+        }
+      else
+        total_execution_slots += 1;
 
       if (last_host != host)
         {
@@ -568,8 +572,6 @@ void account_jobend(
 #ifdef USESAVEDRESOURCES
   pbs_attribute      *pattr;
   long                walltime_val = 0;
-#else
-  time_t              time_now = time(NULL);
 #endif
 
   if ((acct_job(pjob, ds)) != PBSE_NONE)
@@ -598,29 +600,29 @@ void account_jobend(
 #ifdef USESAVEDRESOURCES
   pattr = &pjob->ji_wattr[JOB_ATR_resc_used];
 
-  if (pattr->at_flags & ATR_VFLAG_SET)
+  if ((pattr->at_flags & ATR_VFLAG_SET) &&
+      (pattr->at_val.at_ptr != NULL))
     {
-    resource *pres;
-    const char     *pname;
+    const char *pname;
 
-    pres = (resource *)GET_NEXT(pattr->at_val.at_list);
-    
+    std::vector<resource> *resources = (std::vector<resource> *)pattr->at_val.at_ptr;
+
     /* find the walltime resource */
-    for (;pres != NULL;pres = (resource *)GET_NEXT(pres->rs_link))
+    for (size_t i = 0; i < resources->size(); i++)
       {
-      pname = pres->rs_defin->rs_name;
+      pname = resources->at(i).rs_defin->rs_name;
       
       if (strcmp(pname, "walltime") == 0)
         {
         /* found walltime */
-        walltime_val = pres->rs_value.at_val.at_long;
+        walltime_val = resources->at(i).rs_value.at_val.at_long;
         break;
         }
       }
     }
   sprintf(local_buf, "end=%ld ", (long)pjob->ji_qs.ji_stime + walltime_val);
 #else
-  sprintf(local_buf, "end=%ld ", (long)time_now);
+  sprintf(local_buf, "end=%ld ", (long)pjob->ji_wattr[JOB_ATR_comp_time].at_val.at_long);
 #endif /* USESAVEDRESOURCES */
 
   ds += local_buf;
@@ -632,6 +634,8 @@ void account_jobend(
 
   return;
   }  /* END account_jobend() */
+
+
 
 /*
  * acct_cleanup - remove the old accounting files

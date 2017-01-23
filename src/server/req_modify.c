@@ -133,6 +133,8 @@ extern char server_name[];
 extern const char *PJobSubState[];
 extern char *PJobState[];
 
+extern struct server server;
+
 /* External Functions called */
 
 extern void cleanup_restart_file(job *);
@@ -141,9 +143,12 @@ extern void rel_resc(job *);
 extern job  *chk_job_request(char *, struct batch_request *);
 extern struct batch_request *cpy_checkpoint(struct batch_request *, job *, enum job_atr, int);
 
+extern char *get_correct_jobname(const char *jobid);
+
 /* prototypes */
 void post_modify_arrayreq(batch_request *preq);
 void post_modify_req(batch_request *preq);
+bool allowed_gres_modifier(const char*, const char*);
 
 
 /*
@@ -378,6 +383,29 @@ void chkpt_xfr_done(
 
 
 
+/*
+ * has_unalterable_attribute()
+ *
+ * @param plist - checks the list of attributes to see if any shouldn't be altered
+ * @return true if there's an attribute that shouldn't be altered, else false
+ */
+
+bool has_unalterable_attribute(
+
+  svrattrl *plist)
+
+  {
+  while (plist != NULL)
+    {
+    if (!strcmp(plist->al_name, ATTR_req_information))
+      return(true);
+
+    plist = (svrattrl *)GET_NEXT(plist->al_link);
+    }
+
+  return(false);
+  } // END has_unalterable_attribute()
+
 
 
 /*
@@ -468,6 +496,13 @@ int modify_job(
       }
     }
 
+  if (has_unalterable_attribute(plist) == true)
+    {
+    req_reject(PBSE_UNALTERABLE_ATTR, 0, preq, NULL, NULL);
+
+    return(PBSE_UNALTERABLE_ATTR);
+    }
+
   /* if job is running, special checks must be made */
 
   /* NOTE:  must determine if job exists down at MOM - this will occur if
@@ -529,6 +564,21 @@ int modify_job(
           reply_badattr(PBSE_MODATRRUN, 1, plist, preq);
 
           return(PBSE_MODATRRUN);
+          }
+
+        // see if requester permitted to modify running job gres resource
+        if ((!strcmp(prsd->rs_name, "gres")) &&
+            (!allowed_gres_modifier(preq->rq_user, preq->rq_host)))
+          {
+          /* FAILURE */
+          snprintf(log_buf,sizeof(log_buf),
+            "Cannot modify attribute '%s'\n",
+            plist->al_name);
+          log_err(PBSE_PERM, __func__, log_buf);
+    
+          reply_badattr(PBSE_PERM, 1, plist, preq);
+
+          return(PBSE_PERM);
           }
 
         sendmom = 1;
@@ -688,7 +738,7 @@ int modify_job(
 /*
  * modify_whole_array()
  * modifies the entire job array 
- * @SEE req_modify_array PARENT
+ * @SEE req_modifyarray PARENT
  */
 
 int modify_whole_array(
@@ -800,8 +850,10 @@ void *modify_array_work(
 
     if ((pcnt = strchr(array_spec,'%')) != NULL)
       {
+      int old_slot_limit = pa->ai_qs.slot_limit;
       int slot_limit = atoi(pcnt+1);
       pa->ai_qs.slot_limit = slot_limit;
+      update_slot_held_jobs(pa, slot_limit - old_slot_limit);
       }
     }
   
@@ -957,12 +1009,32 @@ void *req_modifyjob(
   job       *pjob;
   svrattrl  *plist;
   char       log_buf[LOCAL_LOG_BUF_SIZE];
+  char      *correct_jobname_p;
 
   pjob = chk_job_request(preq->rq_ind.rq_modify.rq_objname, preq);
 
   if (pjob == NULL)
     {
     return(NULL);
+    }
+
+  // get the correct job name
+  correct_jobname_p = get_correct_jobname(preq->rq_ind.rq_modify.rq_objname);
+
+  // if correct job name and one passed in don't match, adjust one passed in
+  //  so that mom will be able to match it and not reject modify request due
+  //  to job not found
+  if (correct_jobname_p != NULL)
+    {
+    if (strcmp(correct_jobname_p, preq->rq_ind.rq_modify.rq_objname) != 0)
+      {
+      // job names don't match so need to modify the requested jobname
+      snprintf(preq->rq_ind.rq_modify.rq_objname,
+               sizeof(preq->rq_ind.rq_modify.rq_objname),
+               "%s", correct_jobname_p);
+      }
+    
+    free(correct_jobname_p);
     }
 
   mutex_mgr job_mutex(pjob->ji_mutex, true);
@@ -1066,6 +1138,28 @@ int modify_job_attr(
          perm,         /* I */
          bad);         /* O */
 
+  // Update plugin-reported information, if any
+  while (plist != NULL)
+    {
+    if (plist->al_op == SET_PLUGIN)
+      {
+      rc = PBSE_NONE;
+      pjob->set_plugin_resource_usage(plist->al_resc, plist->al_value);
+      }
+    
+    plist = (struct svrattrl *)GET_NEXT(plist->al_link);
+    }
+
+  /* if req_information has been changed move it over to pattr */
+  if ((rc == 0) &&
+      (newattr[JOB_ATR_req_information].at_flags & ATR_VFLAG_SET))
+    {
+    overwrite_complete_req(&pattr[JOB_ATR_req_information], &newattr[JOB_ATR_req_information]);
+
+    job_attr_def[JOB_ATR_req_information].at_free(newattr + JOB_ATR_req_information);
+    newattr[JOB_ATR_req_information].at_flags &= ATR_VFLAG_MODIFY;
+    }
+
   /* if resource limits are being changed ... */
 
   if ((rc == 0) &&
@@ -1077,10 +1171,10 @@ int modify_job_attr(
 
       if (pjob->ji_qs.ji_state == JOB_STATE_RUNNING)
         {
-        long lim = TRUE;
+        bool lim = true;
         int comp_resc_lt;
        
-        get_svr_attr_l(SRV_ATR_QCQLimits, &lim);
+        get_svr_attr_b(SRV_ATR_QCQLimits, &lim);
         comp_resc_lt = comp_resc2(&pjob->ji_wattr[JOB_ATR_resource],
                                       &newattr[JOB_ATR_resource],
                                       lim,
@@ -1227,12 +1321,17 @@ int modify_job_attr(
 
       job_attr_def[i].at_free(pattr + i);
 
-      if ((newattr[i].at_type == ATR_TYPE_LIST) ||
-          (newattr[i].at_type == ATR_TYPE_RESC))
+      if (newattr[i].at_type == ATR_TYPE_LIST)
         {
         list_move(
           &newattr[i].at_val.at_list,
           &(pattr + i)->at_val.at_list);
+        }
+      else if (newattr[i].at_type == ATR_TYPE_RESC)
+        {
+        void *old_ptr = pattr[i].at_val.at_ptr;
+        pattr[i].at_val.at_ptr = newattr[i].at_val.at_ptr;
+        newattr[i].at_val.at_ptr = old_ptr;
         }
       else
         {
@@ -1310,3 +1409,38 @@ void post_modify_arrayreq(
   return;
   }  /* END post_modify_arrayreq() */
 
+/*
+ * allowed_gres_modifier - see if user permitted to modify running gres resource
+ *
+ * @param user - username to check
+ * @param host - host where user requesting access from
+ * @return true allowed, else false
+ */
+
+bool allowed_gres_modifier(
+
+  const char *user,
+  const char *host)
+
+  {
+  std::string uh;
+
+  if ((user == NULL) || (host == NULL))
+    return(false);
+
+  // uh holds user@host
+  uh = user;
+  uh += "@";
+  uh += host;
+
+  // user@host a manager?
+  if (acl_check(&server.sv_attr[SRV_ATR_managers], (char *)uh.c_str(), ACL_User))
+    return(true);
+
+  // user a gres modifier?
+  if (acl_check(&server.sv_attr[SRV_ATR_Gres_modifiers], (char *)user, ACL_User))
+    return(true);
+
+  // not allowed
+  return(false);
+  }

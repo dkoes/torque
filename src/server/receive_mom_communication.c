@@ -85,6 +85,7 @@
 #include <vector>
 #include <string>
 
+#include "pbs_config.h"
 #include "pbs_nodes.h"
 #include "log.h"
 #include "dis.h"
@@ -92,6 +93,7 @@
 #include "attribute.h"
 #include "mom_update.h"
 #include "u_tree.h"
+#include "authorized_hosts.hpp"
 #include "net_cache.h"
 #include "threadpool.h"
 #include "../lib/Libnet/lib_net.h"
@@ -144,30 +146,38 @@ void get_status_info(
 
 
 
+/*
+ * is_reporter_node()
+ *
+ * @param node_id - the id of the node that we're checking
+ */
 
-int is_reporter_node(
+bool is_reporter_node(
 
-  char *node_id)
+  const char *node_id)
 
   {
-  struct pbsnode *pnode = find_nodebyname(node_id);
-  int             rc = FALSE;
+  pbsnode *pnode = find_nodebyname(node_id);
+  bool     is_reporter = false;
 
   if (pnode != NULL)
     {
-    rc = pnode->nd_is_alps_reporter;
-    unlock_node(pnode, __func__, NULL, LOGLEVEL);
+    is_reporter = (bool)pnode->nd_is_alps_reporter;
+    pnode->unlock_node(__func__, NULL, LOGLEVEL);
     }
 
-  return(rc);
+  return(is_reporter);
   } /* END is_reporter_node() */
 
 
 
+/*
+ * is_stat_get()
+ */
 
 int is_stat_get(
 
-  char            *node_name,
+  const char      *node_name,
   struct tcp_chan *chan)
 
   {
@@ -228,7 +238,7 @@ int gpu_has_job(
         if (gpu_str != NULL)
           {
           snprintf(tmp_str, sizeof(tmp_str), "%s-gpu/%d",
-            pnode->nd_name, gpuid);
+            pnode->get_name(), gpuid);
           
           /* look thru the string and see if it has this host and gpuid.
            * exec_gpus string should be in format of 
@@ -295,7 +305,6 @@ void *svr_is_request(
   unsigned long       tmpaddr;
   struct sockaddr_in  addr;
   struct pbsnode     *node = NULL;
-  char               *node_name = NULL;
   char                log_buf[LOCAL_LOG_BUF_SIZE+1];
   char                msg_buf[80];
   char                tmp[80];
@@ -379,12 +388,11 @@ void *svr_is_request(
     }
 
   ipaddr = args[1];
+
+  node = auth_hosts.get_authorized_node(ipaddr, mom_port);
   
-  if ((node = AVL_find(ipaddr, mom_port, ipaddrs)) != NULL)
-    {
-    lock_node(node, __func__, "AVL_find", LOGLEVEL);
-    } /* END if AVL_find != NULL) */
-  else if (allow_any_mom)
+  if ((node == NULL) &&
+      (allow_any_mom))
     {
     const char *name = get_cached_nameinfo(&addr);
 
@@ -402,9 +410,7 @@ void *svr_is_request(
 
     if (err == PBSE_NONE)
       {
-      node = AVL_find(ipaddr, 0, ipaddrs);
-       
-      lock_node(node, __func__, "no error", LOGLEVEL);
+      node = find_nodebyname(nodename);
       }                                                         
     }
     
@@ -441,14 +447,14 @@ void *svr_is_request(
      "message %s (%d) received from mom on host %s (%s) (sock %d)",
      PBSServerCmds2[command],
      command,
-     node->nd_name,
+     node->get_name(),
      msg_buf,
      chan->sock);
 
     log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_SERVER,__func__,log_buf);
     }
 
-  mutex_mgr node_mutex(node->nd_mutex, true);
+  mutex_mgr node_mutex(&node->nd_mutex, true);
 
   switch (command)
     {
@@ -469,7 +475,7 @@ void *svr_is_request(
         if (LOGLEVEL >= 1)
           {
           snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-              "IS_UPDATE error %d on node %s\n", ret, node->nd_name);
+              "IS_UPDATE error %d on node %s\n", ret, node->get_name());
 
           log_err(ret, __func__, log_buf);
           }
@@ -477,7 +483,7 @@ void *svr_is_request(
         goto err;
         }
 
-      DBPRT(("%s: IS_UPDATE %s 0x%x\n", __func__, node->nd_name, i))
+      DBPRT(("%s: IS_UPDATE %s 0x%x\n", __func__, node->get_name(), i))
 
       update_node_state(node, i);
 
@@ -490,21 +496,22 @@ void *svr_is_request(
 
     case IS_STATUS:
 
+      {
+      std::string node_name = node->get_name();
+     
       if (LOGLEVEL >= 2)
         {
         snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-            "IS_STATUS received from %s", node->nd_name);
+            "IS_STATUS received from %s", node->get_name());
 
         log_event(PBSEVENT_ADMIN, PBS_EVENTCLASS_SERVER, __func__, log_buf);
         }
 
-      if ((node_name = strdup(node->nd_name)) == NULL)
-        goto err;
       node_mutex.unlock();
 
-      ret = is_stat_get(node_name, chan);
+      ret = is_stat_get(node_name.c_str(), chan);
 
-      node = find_nodebyname(node_name);
+      node = find_nodebyname(node_name.c_str());
 
       if (node != NULL)
         {
@@ -528,24 +535,23 @@ void *svr_is_request(
         if (LOGLEVEL >= 1)
           {
           snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
-              "IS_STATUS error %d on node %s", ret, node_name);
+              "IS_STATUS error %d on node %s", ret, node_name.c_str());
 
           log_err(ret, __func__, log_buf);
           }
-        free(node_name);
 
         goto err;
         }
-      free(node_name);
 
       break;
+      }
 
     default:
 
       snprintf(log_buf, LOCAL_LOG_BUF_SIZE,
           "unknown command %d sent from %s",
         command,
-        node->nd_name);
+        node->get_name());
 
       log_err(-1, __func__, log_buf);
 
@@ -570,7 +576,7 @@ err:
       {
       DBPRT(("%s: error processing node %s\n",
             __func__,
-            node->nd_name))
+            node->get_name()))
       }
 
     netaddr_long(args[1], tmp);
@@ -578,7 +584,7 @@ err:
 
     sprintf(log_buf, "%s from %s(%s)",
       dis_emsg[ret],
-      node->nd_name,
+      node->get_name(),
       msg_buf);
     }
   else

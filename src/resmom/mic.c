@@ -97,6 +97,16 @@ extern nodeboard node_boards[];
 #endif
 
 
+/*
+ * add_isa()
+ *
+ * Adds the architecture information for this MIC to the status
+ * @param status - the status strings
+ * @param mic_stat - specifies the current state of this MIC
+ * @return PBSE_NONE on success or PBSE_SYSTEM if the ISA index doesn't match one we know.
+ *         The error case should never realistically happen.
+ */
+
 int add_isa(
 
   std::vector<std::string> &status,
@@ -142,6 +152,15 @@ int add_isa(
 
 
 
+/*
+ * calculate_and_add_load()
+ *
+ * Calculates the load and normalized load for this MIC and adds them to the status
+ * @param status - the status strings to be sent to pbs_server
+ * @param mic_stat - the struct describing this MIC's state
+ * @return PBSE_NONE on success
+ */
+
 int calculate_and_add_load(
 
   std::vector<std::string> &status,
@@ -172,6 +191,14 @@ int calculate_and_add_load(
 
 
 
+/*
+ * add_single_mic_info()
+ *
+ * Adds the information for a single MIC accelerator to the node status
+ * @param status - we append this MIC's status information here
+ * @param mic_stat - the struct that holds this accelerator's state information
+ * @return PBSE_NONE on SUCCESS. This function can't really fail.
+ */
 
 int add_single_mic_info(
 
@@ -212,20 +239,111 @@ int add_single_mic_info(
   return(PBSE_NONE);
   } /* END add_single_mic_info() */
 
+// A set of the OS index for each MIC that is down
+std::set<int> down_mics;
 
 
 
+/*
+ * check_for_mics()
+ *
+ * Checks if we have MIC accelerators on this node. If NUMA_SUPPORT (large scale NUMA machine
+ * support) is enabled then everything that happens per node happens per nodeboard instead.
+ * @param num_engines - output - set to the number of MIC accelerators for this node.
+ */
+
+int check_for_mics(
+  
+  uint32_t &num_engines)
+
+  {
+  uint32_t                 i = 0;
+
+#ifdef NUMA_SUPPORT
+  /* does this node board have mics configured? */
+  if (node_boards[numa_index].mic_end_index < 0)
+    return(PBSE_NONE);
+#endif
+
+  if (COIEngineGetCount(COI_ISA_MIC, &num_engines) != COI_SUCCESS)
+    {
+    log_err(-1, __func__, "Mics are present but apparently not configured correctly - can't get count");
+    return(PBSE_SYSTEM);
+    }
+
+#ifdef NUMA_SUPPORT
+  if (num_engines < node_boards[numa_index].mic_end_index)
+    {
+    snprintf(log_buffer, sizeof(log_buffer),
+    "node board %d is supposed to have mic range %d-%d but there are only %d mics",
+    numa_index, node_boards[numa_index].mic_start_index,
+    node_boards[numa_index].mic_end_index, num_engines);
+    log_err(-1, __func__, log_buffer);
+    return(PBSE_SYSTEM);
+    }
+
+  for (i = node_boards[numa_index].mic_start_index; i <= node_boards[numa_index].mic_end_index; i++)
+#else
+  for (i = 0; i < num_engines; i++)
+#endif
+
+    {
+    int                     rc;
+    COIENGINE               engine;
+    struct COI_ENGINE_INFO  mic_stat;
+    std::set<int>::iterator it;
+
+    memset(&engine, 0, sizeof(engine));
+    memset(&mic_stat, 0, sizeof(mic_stat));
+
+    rc = COIEngineGetHandle(COI_ISA_MIC, i, &engine);
+    if (rc != COI_SUCCESS)
+      {
+      it = down_mics.find(i);
+      if (it == down_mics.end())
+        {
+        snprintf(log_buffer, sizeof(log_buffer), "Can't get handle for mic index %d", (int)i);
+        log_event(PBSEVENT_SYSTEM,PBS_EVENTCLASS_SERVER, __func__, log_buffer);
+        down_mics.insert(i);
+        }
+
+      continue;
+      }
+    else
+      {
+      it = down_mics.find(i);
+      if (it != down_mics.end())
+        {
+        /* if we made it here we have the mic again. remove it from the down_mics set */
+        snprintf(log_buffer, sizeof(log_buffer), "handle for mic index %d is back online", (int)i);
+        log_event(PBSEVENT_SYSTEM,PBS_EVENTCLASS_SERVER, __func__, log_buffer);
+        down_mics.erase(it);
+        }
+      }
+    }
+
+  return(PBSE_NONE);
+  } // END check_for_mics()
+
+
+
+/*
+ * add_mic_status()
+ *
+ * Adds the mic information to the status that is sent to pbs_server
+ * @param status - each string that will be sent to pbs_server. We will append the mic
+ * status information here.
+ *
+ * @return PBSE_NONE on success, or an appropriate PBSE_* error on failure
+ */
 
 int add_mic_status(
 
   std::vector<std::string> &status)
 
   {
-  COIENGINE                engine[MAX_ENGINES];
   uint32_t                 num_engines = 0;
-  uint32_t                 i;
-
-  struct COI_ENGINE_INFO   mic_stat[MAX_ENGINES];
+  uint32_t                 i = 0;
 
 #ifdef NUMA_SUPPORT
   /* does this node board have mics configured? */
@@ -257,15 +375,25 @@ int add_mic_status(
   for (i = 0; i < num_engines; i++)
 #endif
     {
-    if (COIEngineGetHandle(COI_ISA_MIC, i, &engine[i]) != COI_SUCCESS)
+    COIENGINE                engine;
+    struct COI_ENGINE_INFO   mic_stat;
+
+    memset(&engine, 0, sizeof(engine));
+    memset(&mic_stat, 0, sizeof(mic_stat));
+
+    if (COIEngineGetHandle(COI_ISA_MIC, i, &engine) != COI_SUCCESS)
       {
-      snprintf(log_buffer, sizeof(log_buffer), "Can't get handle for mic index %d", (int)i);
-      log_err(-1, __func__, log_buffer);
+      if (down_mics.find(i) == down_mics.end())
+        {
+        snprintf(log_buffer, sizeof(log_buffer), "Can't get handle for mic index %d", (int)i);
+        log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, log_buffer);
+        down_mics.insert(i);
+        }
 
       continue;
       }
 
-    if (COIEngineGetInfo(engine[i], sizeof(struct COI_ENGINE_INFO), &mic_stat[i]) != COI_SUCCESS)
+    if (COIEngineGetInfo(engine, sizeof(struct COI_ENGINE_INFO), &mic_stat) != COI_SUCCESS)
       {
       snprintf(log_buffer, sizeof(log_buffer), "Can't get information for mic index %d", (int)i);
       log_err(-1, __func__, log_buffer);
@@ -273,14 +401,13 @@ int add_mic_status(
       continue;
       }
 
-    add_single_mic_info(status, &mic_stat[i]);
+    add_single_mic_info(status, &mic_stat);
     }
 
   status.push_back(END_MIC_STATUS);
 
   return(PBSE_NONE);
   } /* END add_mic_status() */
-
 
 
 

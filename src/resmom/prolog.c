@@ -99,7 +99,7 @@
 #include "pbs_job.h"
 #include "log.h"
 #include "../lib/Liblog/pbs_log.h"
-#include "../lib/Libifl/lib_ifl.h"
+#include "lib_ifl.h"
 #include "../lib/Libutils/lib_utils.h"
 #include "mom_mach.h"
 #include "mom_func.h"
@@ -108,6 +108,7 @@
 #include "net_connect.h"
 #include "utils.h"
 #include "mom_config.h"
+#include "json/json.h"
 
 
 const int   PELOG_DOESNT_EXIST = -1;
@@ -130,11 +131,14 @@ extern long TJobStartTimeout;
 static pid_t child;
 static pid_t childSessionID;
 static int   run_exit;
+extern char *path_jobs;
+extern int   multi_mom;
+extern unsigned int pbs_rm_port;
 
 /* external prototypes */
 
 extern int pe_input(char *);
-extern void encode_used(job *, int, std::stringstream *, tlist_head *);
+extern void encode_used(job *, int, Json::Value *, tlist_head *);
 #ifdef ENABLE_CSA
 extern void add_wkm_end(uint64_t, int64_t, char *);
 
@@ -537,6 +541,32 @@ int check_pelog_permissions(
 
 
 /*
+ * get_complete_hostlist()
+ *
+ */
+
+char *get_complete_hostlist(
+
+  job *pjob)
+
+  {
+  std::string complete_hostlist;
+  std::string previous_host;
+
+  for (int i = 0; i < pjob->ji_numnodes; i++)
+    {
+    if (i != 0)
+      complete_hostlist += ",";
+
+    complete_hostlist += pjob->ji_hosts[i].hn_host;
+    }
+
+  return(strdup(complete_hostlist.c_str()));
+  } // END get_complete_hostlist()
+
+
+
+/*
  * setup_pelog_arguments()
  *
  * Sets arg with the correct arguments for the pelog script
@@ -558,6 +588,19 @@ void setup_pelog_arguments(
   int  LastArg;
   char resc_list[2048];
   char resc_used[2048];
+  char namebuf[1024];
+  
+  if (multi_mom)
+    {
+    snprintf(namebuf, sizeof(namebuf), "%s%s%d%s",
+      path_jobs, pjob->ji_qs.ji_fileprefix, pbs_rm_port, JOB_SCRIPT_SUFFIX);
+    }
+  else
+    {
+    snprintf(namebuf, sizeof(namebuf), "%s%s%s",
+      path_jobs, pjob->ji_qs.ji_fileprefix, JOB_SCRIPT_SUFFIX);
+    }
+
 
   arg[0] = pelog;
 
@@ -587,20 +630,29 @@ void setup_pelog_arguments(
     arg[8] = pjob->ji_wattr[JOB_ATR_in_queue].at_val.at_str;
     arg[9] = pjob->ji_wattr[JOB_ATR_account].at_val.at_str;
     arg[10] = exit_stat;
-    arg[11] = NULL;
+    arg[11] = strdup(namebuf);
+    arg[12] = NULL;
 
-    LastArg = 11;
+    LastArg = 12;
     }
   else
     {
     /* prologue */
-
-    arg[5] = resc_to_string(pjob, JOB_ATR_resource, resc_list, sizeof(resc_list));
+    int last_arg = 9;
+    arg[5] = strdup(resc_to_string(pjob, JOB_ATR_resource, resc_list, sizeof(resc_list)));
     arg[6] = pjob->ji_wattr[JOB_ATR_in_queue].at_val.at_str;
     arg[7] = pjob->ji_wattr[JOB_ATR_account].at_val.at_str;
-    arg[8] = NULL;
+    arg[8] = strdup(namebuf);
 
-    LastArg = 8;
+    if (which == PE_PRESETUPPROLOG)
+      {
+      arg[9] = get_complete_hostlist(pjob);
+      last_arg++;
+      }
+
+    arg[last_arg] = NULL;
+
+    LastArg = last_arg;
     }
 
   for (int aindex = 0;aindex < LastArg; aindex++)
@@ -898,17 +950,21 @@ void setup_pelog_outputs(
         (fds2 < 0))
       {
       if (fds1 >= 0)
+        {
         close(fds1);
+        fds1 = -1;
+        }
 
       if (fds2 >= 0)
+        {
         close(fds2);
+        fds2 = -1;
+        }
 
       if ((pe_io_type == PE_IO_TYPE_STD) &&
           (strlen(specpelog) == strlen(path_epilogp)) &&
           (strcmp(path_epilogp, specpelog) == 0))
         dupeStdFiles = 0;
-      else
-        exit(-1);
       }
     }
 
@@ -924,7 +980,8 @@ void setup_pelog_outputs(
 
       if (dupeStdFiles)
         {
-        if ((fds1 >= 0)&&(dup(fds1) >= 0))
+        if ((fds1 >= 0) &&
+            (dup(fds1) >= 0))
           close(fds1);
         }
       }
@@ -935,7 +992,8 @@ void setup_pelog_outputs(
 
       if (dupeStdFiles)
         {
-        if ((fds2 >= 0)&&(dup(fds2) >= 0))
+        if ((fds2 >= 0) &&
+            (dup(fds2) >= 0))
           close(fds2);
         }
       }
@@ -1074,7 +1132,7 @@ void prepare_and_run_pelog_as_child(
   int   fd_input)
 
   {
-  char *arg[12];
+  char *arg[13];
 
   handle_pipes_as_child(parent_read, parent_write, kid_read, kid_write);
 
@@ -1174,9 +1232,7 @@ int get_child_exit_status(
   {
   struct sigaction  act;
   struct sigaction  oldact;
-  unsigned int      real_alarm_time = pe_alarm_time;
-  /* The prolog cannot take longer than the TJobStartTimeout */
-  unsigned int      job_start_timeout = (unsigned int)TJobStartTimeout;
+  long              real_alarm_time = pe_alarm_time;
   int               waitst;
   int               KillSent = FALSE;
   
@@ -1187,14 +1243,9 @@ int get_child_exit_status(
 
   sigaction(SIGALRM, &act, &oldact);
 
-  if (job_start_timeout > 10) //Kill the prolog at least ten seconds before the timeout.
+  if (real_alarm_time > 10) //Kill the prolog at least ten seconds before the timeout.
     {
-    job_start_timeout -= 10;
-    }
-
-  if (real_alarm_time > job_start_timeout)
-    {
-    real_alarm_time = job_start_timeout;
+    real_alarm_time -= 10;
     }
 
   alarm(real_alarm_time);

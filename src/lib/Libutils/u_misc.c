@@ -86,10 +86,16 @@
 #include <vector>
 
 #include "utils.h"
+#include "resource.h"
 
 #ifndef MAX_CMD_ARGS
 #define MAX_CMD_ARGS 10
 #endif
+
+
+const char *incompatible_l[] = { "nodes", "size", "mppwidth", "mem", "hostlist",
+                                 "ncpus", "procs", "pvmem", "pmem", "vmem", "reqattr",
+                                 "software", "geometry", "opsys", "tpn", "trl", NULL };
 
 int    ArgC = 0;
 char **ArgV = NULL;
@@ -229,7 +235,102 @@ void save_args(int argc, char **argv)
 
 
 
-void translate_range_string_to_vector(
+/*
+ * add_range_to_string()
+ *
+ * Adds a range specified by begin and end to range_string
+ *
+ * @param range_string (O) - the string we're adding a range to
+ * @param begin (I) - the first int in the range
+ * @param end (I) - the last int in the range
+ */
+
+void add_range_to_string(
+
+  std::string &range_string,
+  int          begin,
+  int          end)
+
+  {
+  char buf[MAXLINE];
+
+  if (begin == end)
+    {
+    if (range_string.size() == 0)
+      sprintf(buf, "%d", begin);
+    else
+      sprintf(buf, ",%d", begin);
+    }
+  else
+    {
+    if (range_string.size() == 0)
+      sprintf(buf, "%d-%d", begin, end);
+    else
+      sprintf(buf, ",%d-%d", begin, end);
+    }
+
+  range_string += buf;
+  } // END add_range_to_string()
+
+
+
+/*
+ * translate_vector_to_range_string()
+ *
+ * Takes the indices specified in indices and places them in a range string that holds the
+ * form of %d[[-%d][,%d[-%d]]...]
+ *
+ * @param range_string (O) - the resulting string
+ * @param indices (I) - the indices to place in the string
+ */
+
+void translate_vector_to_range_string(
+
+  std::string            &range_string,
+  const std::vector<int> &indices)
+
+  {
+  // range_string starts empty
+  range_string.clear();
+
+  if (indices.size() == 0)
+    return;
+
+  int first = indices[0];
+  int prev = first;
+
+  for (unsigned int i = 1; i < indices.size(); i++)
+    {
+    if (indices[i] == prev + 1)
+      {
+      // Still in a consecutive range
+      prev = indices[i];
+      }
+    else
+      {
+      add_range_to_string(range_string, first, prev);
+
+      first = prev = indices[i];
+      }
+    }
+
+  // output final piece
+  add_range_to_string(range_string, first, prev);
+  } // END translate_vector_to_range_string()
+
+
+
+/*
+ * translate_range_string_to_vector()
+ *
+ * Takes a range string in the form of %d[[-%d][,%d[-%d]]...] and places each individual
+ * int in a vector of ints.
+ *
+ * @param range_string (I) - the string specifying the range
+ * @param indices (O) - the vector populated from range_string
+ */
+
+int translate_range_string_to_vector(
 
   const char       *range_string,
   std::vector<int> &indices)
@@ -237,12 +338,24 @@ void translate_range_string_to_vector(
   {
   char *str = strdup(range_string);
   char *ptr = str;
-  int   prev;
+  int   prev = 0;
   int   curr;
+  int   rc = PBSE_NONE;
+
+  while (is_whitespace(*ptr))
+    ptr++;
 
   while (*ptr != '\0')
     {
+    char *old_ptr = ptr;
     prev = strtol(ptr, &ptr, 10);
+
+    if (ptr == old_ptr)
+      {
+      // This means *ptr wasn't numeric, error. break out to prevent an infinite loop
+      rc = -1;
+      break;
+      }
     
     if (*ptr == '-')
       {
@@ -256,7 +369,7 @@ void translate_range_string_to_vector(
         prev++;
         }
 
-      if ((*ptr == ',') ||
+      while ((*ptr == ',') ||
           (is_whitespace(*ptr)))
         ptr++;
       }
@@ -264,14 +377,181 @@ void translate_range_string_to_vector(
       {
       indices.push_back(prev);
 
-      if ((*ptr == ',') ||
-          (is_whitespace(*ptr)))
+      while ((*ptr == ',') ||
+             (is_whitespace(*ptr)))
         ptr++;
       }
     }
 
   free(str);
+  
+  return(rc);
   } /* END translate_range_string_to_vector() */
 
 
 
+/*
+ * capture_until_close_character()
+ */
+
+void capture_until_close_character(
+
+  char        **start,
+  std::string  &storage,
+  char          end)
+
+  {
+  if ((start == NULL) ||
+      (*start == NULL))
+    return;
+
+  char *val = *start;
+  char *ptr = strchr(val, end);
+
+  // Make sure we found a close quote and this wasn't an empty string
+  if ((ptr != NULL) &&
+      (ptr != val))
+    {
+    storage = val;
+    storage.erase(ptr - val);
+    *start = ptr + 1; // add 1 to move past the character
+    }
+  else
+    {
+    // Make sure we aren't returning stale values
+    storage.clear();
+    }
+  } // capture_until_close_character()
+
+
+/* 
+ * task_hosts_match()
+ *
+ * check for FQDN and short name to see if
+ * host names match
+ *
+ * @param  task_host - first host name to match
+ * @param  this_hostname - host name of physical host
+ *
+ */
+
+bool task_hosts_match(
+        
+  const char *task_host, 
+  const char *this_hostname)
+ 
+  {
+#ifdef NUMA_SUPPORT
+  char *real_task_host = strdup(task_host);
+  char *last_dash = NULL;
+
+  if (real_task_host == NULL)
+    return(false);
+
+  last_dash = strrchr(real_task_host, '-');
+  if (last_dash != NULL)
+    *last_dash = '\0';
+    
+  if (strcmp(real_task_host, this_hostname))
+    {
+    /* see if the short name might match */
+    char task_hostname[PBS_MAXHOSTNAME];
+    char local_hostname[PBS_MAXHOSTNAME];
+    char *dot_ptr;
+
+    strcpy(task_hostname, real_task_host);
+    strcpy(local_hostname, this_hostname);
+
+    dot_ptr = strchr(task_hostname, '.');
+    if (dot_ptr != NULL)
+      *dot_ptr = '\0';
+
+    dot_ptr = strchr(local_hostname, '.');
+    if (dot_ptr != NULL)
+      *dot_ptr = '\0';
+
+    if (strcmp(task_hostname, local_hostname))
+      {
+      /* this task does not belong to this host. Go to the next one */
+      return(false);
+      }
+    }
+
+
+#else
+  if (strcmp(task_host, this_hostname))
+    {
+    /* see if the short name might match */
+    char task_hostname[PBS_MAXHOSTNAME];
+    char local_hostname[PBS_MAXHOSTNAME];
+    char *dot_ptr;
+
+    strcpy(task_hostname, task_host);
+    strcpy(local_hostname, this_hostname);
+
+    dot_ptr = strchr(task_hostname, '.');
+    if (dot_ptr != NULL)
+      *dot_ptr = '\0';
+
+    dot_ptr = strchr(local_hostname, '.');
+    if (dot_ptr != NULL)
+      *dot_ptr = '\0';
+
+    if (strcmp(task_hostname, local_hostname))
+      {
+      /* this task does not belong to this host. Go to the next one */
+      return(false);
+      }
+    }
+#endif
+
+  return(true);
+  }
+
+
+
+#ifdef PENABLE_LINUX_CGROUPS
+
+
+/* 
+ * have_incompatible_dash_l_resource
+ *
+ * Check to see if this is an incompatile -l resource
+ * request for a -L syntax
+ *
+ * @param pjob  - the job structure we are working with
+ *
+ */
+
+bool have_incompatible_dash_l_resource(
+
+  pbs_attribute *pattr)
+
+  {
+  bool found_incompatible_resource = false;
+
+  if ((pattr->at_flags & ATR_VFLAG_SET) &&
+      (pattr->at_val.at_ptr != NULL))
+    {
+    std::vector<resource> *resources = (std::vector<resource> *)pattr->at_val.at_ptr;
+
+    for (size_t j = 0; j < resources->size() && found_incompatible_resource == false; j++)
+      {
+      resource &r = resources->at(j);
+
+      for (int i = 0; incompatible_l[i] != NULL; i++)
+        {
+        if (!strcmp(incompatible_l[i], r.rs_defin->rs_name))
+          {
+          found_incompatible_resource = true;
+          break;
+          }
+        }
+      }
+    }
+
+  return(found_incompatible_resource);
+  } // END have_incompatible_dash_l_resource()
+
+
+#endif /* PENABLE_LINUX_CGROUPS */

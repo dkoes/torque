@@ -90,6 +90,7 @@
 #include "list_link.h"
 #include "attribute.h"
 #include "pbs_error.h"
+#include "pbs_helper.h"
 
 /*
  * This file contains functions for manipulating attributes of type
@@ -129,10 +130,10 @@ static const char *false_val = ATR_FALSE;
 int decode_b(
 
   pbs_attribute *patr,
-  const char    *name,  /* pbs_attribute name */
-  const char *rescn,  /* resource name, unused here */
+  const char * UNUSED(name),  /* pbs_attribute name */
+  const char * UNUSED(rescn),  /* resource name, unused here */
   const char    *val,  /* pbs_attribute value */
-  int            perm) /* only used for resources */
+  int          UNUSED(perm)) /* only used for resources */
 
   {
   const char *src;
@@ -143,7 +144,7 @@ int decode_b(
     {
     patr->at_flags = (patr->at_flags & ~ATR_VFLAG_SET) |
                      ATR_VFLAG_MODIFY;
-    patr->at_val.at_long = 0;  /* default to false */
+    patr->at_val.at_bool = false;  /* default to false */
     }
   else
     {
@@ -159,7 +160,7 @@ int decode_b(
         (strcmp(ucVal, "1") == 0)  ||
         (strcmp(ucVal, "y") == 0)  ||
         (strcmp(ucVal, "Y") == 0))
-      patr->at_val.at_long = 1; /* true */
+      patr->at_val.at_bool = true;
     else if ((strcmp(ucVal, false_val) == 0) ||
              (strcmp(ucVal, "FALSE") == 0)   ||
              (strcmp(ucVal, "false") == 0)   ||
@@ -168,7 +169,7 @@ int decode_b(
              (strcmp(ucVal, "0") == 0)       ||
              (strcmp(ucVal, "n") == 0)       ||
              (strcmp(ucVal, "N") == 0))
-      patr->at_val.at_long = 0; /* false */
+      patr->at_val.at_bool = false;
     else
       return (PBSE_BADATVAL);
 
@@ -191,10 +192,10 @@ int encode_b(
 
   pbs_attribute  *attr,   /* ptr to pbs_attribute */
   tlist_head     *phead,  /* head of pbs_attribute list */
-  const char    *atname, /* pbs_attribute name */
-  const char    *rsname, /* resource name or null */
-  int             mode,   /* encode mode, unused here */
-  int             perm)   /* only used for resources */
+  const char     *atname, /* pbs_attribute name */
+  const char     *rsname, /* resource name or null */
+  int            UNUSED(mode),   /* encode mode, unused here */
+  int            UNUSED(perm))   /* only used for resources */
 
   {
   size_t   ct;
@@ -207,7 +208,7 @@ int encode_b(
   if (!(attr->at_flags & ATR_VFLAG_SET))
     return (0);
 
-  if (attr->at_val.at_long)
+  if (attr->at_val.at_bool)
     {
     value = true_val;
     }
@@ -256,17 +257,15 @@ int set_b(
     {
 
     case SET:
-      attr->at_val.at_long = new_attr->at_val.at_long;
+      attr->at_val.at_bool = new_attr->at_val.at_bool;
       break;
 
     case INCR:
-      attr->at_val.at_long =
-        attr->at_val.at_long | new_attr->at_val.at_long; /* "or" */
+      attr->at_val.at_bool = attr->at_val.at_bool || new_attr->at_val.at_bool; /* "or" */
       break;
 
     case DECR:
-      attr->at_val.at_long = attr->at_val.at_long &
-                             ~new_attr->at_val.at_long;
+      attr->at_val.at_bool = attr->at_val.at_bool && !new_attr->at_val.at_bool;
       break;
 
     default:
@@ -294,8 +293,8 @@ int comp_b(
   if (!attr || !with)
     return (1);
 
-  if (((attr->at_val.at_long == 0) && (with->at_val.at_long == 0)) ||
-      ((attr->at_val.at_long != 0) && (with->at_val.at_long != 0)))
+  if (((attr->at_val.at_bool == false) && (with->at_val.at_bool == false)) ||
+      ((attr->at_val.at_bool != false) && (with->at_val.at_bool != false)))
     return (0);
   else
     return (1);

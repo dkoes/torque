@@ -1,0 +1,15 @@
+#!/bin/sh
+
+if  [ ! -s "${PWD}/configure.ac" -o ! -d "${PWD}/buildutils" ] || \
+        ! grep -q -E 'AC_INIT[[:blank:]]*\([[:blank:]]*\[torque\]' \
+        "${PWD}/configure.ac"
+then
+    echo "It appears that the present working directory" >&2
+    echo "  '${PWD}' doesn't describe the root source" >&2
+    echo "  path." >&2
+    echo "  This script must be run from the root souce path." >&2
+    exit 1
+fi
+
+release=`git log --pretty=format:%ct_%h -1`
+echo "${release}"

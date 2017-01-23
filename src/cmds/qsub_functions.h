@@ -88,13 +88,13 @@
 #include <stdio.h>
 #include <termios.h>
 #include <sys/types.h>
+
 #include "u_hash_map_structs.h"
 #ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
 #endif /* HAVE_SYS_IOCTL_H */
 
 #ifdef TEST_FUNCTION
-#define PBS_SERVER_HOME "./pbshome"
 #define SUBMIT_FILTER_PATH "./submitFilter"
 #endif /* TEST_FUNCTION */
 

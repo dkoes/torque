@@ -289,6 +289,7 @@ void disconnect_from_server();
   "acl_users - list of users allowed/denied access to server\n" \
   "comment - informational text string about the server\n" \
   "default_queue - default queue used when a queue is not specified\n" \
+  "gres_modifiers - list of users granted permission to modify their own running jobs' gres resource\n" \
   "log_events - a bit string which specfiies what is logged\n"
 
 #define HELP_SERVERPUBLIC2 \
@@ -307,7 +308,8 @@ void disconnect_from_server();
   "resource_max - the maximum amount of resources that are on the system\n" \
   "scheduler_iteration - the amount of seconds between timed scheduler iterations\n" \
   "scheduling - when true the server should tell the scheduler to run\n" \
-  "system_cost - arbitirary value factored into resource costs\n" \
+  "system_cost - arbitrary value factored into resource costs\n" \
+  "use_jobs_subdirs - when true divide storage of jobs into subdirectories in $PBS_HOME/server_priv/{jobs,arrays}\n" \
    
 #define HELP_SERVERRO \
   "Server Read Only Attributes:\n" \

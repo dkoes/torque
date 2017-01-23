@@ -23,6 +23,9 @@
 
 class mom_hierarchy_handler
   {
+#ifdef TEST_FUNCTION
+friend class test_mom_hierarchy_handler;
+#endif
 private:
   bool           sendOnStartup; //Send the hierarchy to all moms on startup. (Default is true.)
   bool           sendOnDemand;  //Only send the hierarchy if requested.
@@ -37,16 +40,12 @@ private:
 
 
   void make_default_hierarchy();
-  void check_if_in_nodes_file(char           *hostname,
-                                 int             level_index,
-                                 unsigned short &rm_port);
-  void convert_level_to_send_format(mom_nodes &nodes,
-                                        int       level_index);
+  void check_if_in_nodes_file(const char *hostname, int level_index, unsigned short &rm_port);
+  void convert_level_to_send_format(mom_nodes &nodes, int level_index);
   void convert_path_to_send_format(mom_levels &levels);
   void add_missing_nodes(void);
   void convert_mom_hierarchy_to_send_format(void);
-  int sendHierarchyToNode(char             *name,
-                             unsigned short  port);
+  int sendHierarchyToNode(const char *name, unsigned short port, bool first_time);
   void loadHierarchy(void);
   pbsnode *nextNode(all_nodes_iterator **iter);
 
@@ -77,7 +76,7 @@ public:
 
   void initialLoadHierarchy(void); //Called only at startup.
   void reloadHierarchy(void);      //Called any time a node is dynamically added or removed.
-  void checkAndSendHierarchy(void); //Called every iteration of the main loop.
+  void checkAndSendHierarchy(bool first_time); //Called every iteration of the main loop.
   void sendHierarchyToANode(struct pbsnode *node); //Called when a mom requests the hierarchy
 
   mom_hierarchy_handler(void):

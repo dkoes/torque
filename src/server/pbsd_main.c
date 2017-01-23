@@ -111,7 +111,7 @@
 #include "../lib/Liblog/pbs_log.h"
 #include "../lib/Liblog/log_event.h"
 #include "../lib/Liblog/chk_file_sec.h"
-#include "../lib/Libifl/lib_ifl.h"
+#include "lib_ifl.h"
 #include "server_limits.h"
 #include "attribute.h"
 #include "pbs_job.h"
@@ -128,12 +128,12 @@
 #include "dis_init.h"
 #include "batch_request.h"
 #include "pbs_proto.h"
-#include "u_tree.h"
+#include "authorized_hosts.hpp"
 #include "utils.h"
 #include "threadpool.h"
 #include "../lib/Libutils/u_lock_ctl.h" /* lock_init */
 #include "svr_func.h" /* get_svr_attr_* */
-#include "../lib/Libifl/lib_ifl.h" /* get_port_from_server_name_file */
+#include "lib_ifl.h" /* get_port_from_server_name_file */
 #include "node_manager.h" /* svr_is_request */
 #include "net_connect.h" /* set_localhost_name */
 #include "../lib/Libnet/lib_net.h" /* start_listener_addrinfo */
@@ -146,7 +146,7 @@
 #include "server_comm.h"
 #include "node_func.h"
 #include "mom_hierarchy_handler.h"
-#include "track_alps_reservations.h"
+#include "completed_jobs_map.h"
 
 
 #define TASK_CHECK_INTERVAL      10
@@ -198,7 +198,7 @@ extern int             run_change_logs;
 
 /* External Functions */
 
-extern int    recov_svr_attr (int);
+extern int   recov_svr_attr (int);
 extern void  change_logs_handler(int);
 extern void  change_logs();
 
@@ -207,7 +207,7 @@ extern void  change_logs();
 /* Local Private Functions */
 
 static int    get_port (char *, unsigned int *, pbs_net_t *);
-static int    daemonize_server (int, pid_t *);
+int daemonize_server (bool, bool, pid_t *);
 int mutex_lock (mutex_t *);
 int mutex_unlock (mutex_t *);
 int svr_restart();
@@ -217,10 +217,10 @@ void          restore_attr_default (struct pbs_attribute *);
 
 int                     mom_hierarchy_retry_time = NODE_COMM_RETRY_TIME;
 time_t                  last_task_check_time = 0;
-int                     disable_timeout_check = FALSE;
 int                     lockfds = -1;
 int                     ForceCreation = FALSE;
 int                     high_availability_mode = FALSE;
+int                     paused;
 char                   *acct_file = NULL;
 char                   *log_file  = NULL;
 char                   *job_log_file = NULL;
@@ -230,6 +230,7 @@ char                    path_log[MAXPATHLEN + 1];
 char                   *path_priv = NULL;
 char                   *path_arrays;
 char                   *path_credentials;
+char                   *path_pbs_environment;
 char                   *path_jobs;
 char                   *path_queues;
 char                   *path_spool;
@@ -238,6 +239,7 @@ char                   *path_svrdb_new;
 char                   *path_svrlog;
 char                   *path_track;
 char                   *path_nodes;
+char                   *path_node_usage;
 char                   *path_mom_hierarchy;
 char                   *path_nodes_new;
 char                   *path_nodestate;
@@ -257,6 +259,7 @@ unsigned int            pbs_scheduler_port;
 extern pbs_net_t        pbs_server_addr;
 unsigned int            pbs_server_port_dis;
 
+bool                    use_path_home = false;  // set to true if pbs_server is started with a -d option
 bool                    auto_send_hierarchy = true; //If false this directs pbs_server to not send the hierarchy to all the MOMs on startup.
                                                      //Instead, the hierarchy is only sent if a MOM requests it.
                                                      //This flag works only in conjunction with the local MOM hierarchy feature.
@@ -273,7 +276,7 @@ int                     route_retry_interval = 10; /* time in seconds to check r
 char                    Torque_Info_Version[] = PACKAGE_VERSION;
 char                    Torque_Info_Version_Revision[] = GIT_HASH;
 char                    Torque_Info_Component[] = "pbs_server";
-char                    Torque_Info_SysVersion[BUF_SIZE];
+char                    Torque_Info_SysVersion[MAX_LINE];
 
 /* HA global data items */
 long                    HALockCheckTime = 0;
@@ -298,14 +301,14 @@ extern int              listener_command;
 //extern hello_container  hellos;
 //extern hello_container  failures;
 pthread_mutex_t        *listener_command_mutex;
-tlist_head              svr_newnodes;          /* list of newly created nodes      */
 pthread_mutex_t         task_list_timed_mutex;
 pid_t                   sid;
 
 char                   *plogenv = NULL;
 int                     LOGLEVEL = 0;
 int                     DEBUGMODE = 0;
-int                     TDoBackground = 1;  /* background daemon */
+bool                    TDoBackground = true;  /* background daemon */
+bool                    LineBufferOutput = true;
 
 char                   *ProgName;
 char                   *NodeSuffix = NULL;
@@ -315,7 +318,9 @@ int                     MultiMomMode = 0;
 int                     allow_any_mom = FALSE;
 int                     array_259_upgrade = FALSE;
 
-sem_t  *job_clone_semaphore; /* used to track the number of job_clone_wt requests are outstanding */
+sem_t                  *job_clone_semaphore; /* used to track the number of job_clone_wt requests are outstanding */
+acl_special             limited_acls;
+authorized_hosts        auth_hosts;
 
 char server_localhost[PBS_MAXHOSTNAME + 1];
 size_t localhost_len = PBS_MAXHOSTNAME;
@@ -395,6 +400,7 @@ static void need_y_response(
   }  /* END need_y_response() */
  
 
+completed_jobs_map_class completed_jobs_map;
 
 void clear_listeners(void)   /* I */
 
@@ -447,16 +453,19 @@ int PBSShowUsage(
   fprintf(stderr, "  -A <PATH> \\\\ Path to accounting file\n");
   fprintf(stderr, "  -a <BOOL> \\\\ Scheduling\n");
   fprintf(stderr, "  -c        \\\\ Wait for mom hierarchy\n");
-  fprintf(stderr, "  -D        \\\\ Debugmode\n");
+  fprintf(stderr, "  -D        \\\\ Debug mode (do not fork)\n");
   fprintf(stderr, "  -d <PATH> \\\\ Homedir\n");
   fprintf(stderr, "  -e        \\\\ Enable any mom\n");
+  fprintf(stderr, "  -F        \\\\ Do not fork (use when running under systemd)\n");
   fprintf(stderr, "  -f        \\\\ Force Overwrite Serverdb\n");
   fprintf(stderr, "  -h        \\\\ Print Usage\n");
   fprintf(stderr, "  -H <HOST> \\\\ Daemon Hostname\n");
   fprintf(stderr, "  -L <PATH> \\\\ Logfile\n");
   fprintf(stderr, "  -l <PORT> \\\\ Listener Port\n");
   fprintf(stderr, "  -M <PORT> \\\\ MOM Port\n");
+  fprintf(stderr, "  -n        \\\\ Only send the hierarchy on request\n");
   fprintf(stderr, "  -p <PORT> \\\\ Server Port\n");
+  fprintf(stderr, "  -P        \\\\ Pause or Unpause server\n");
   fprintf(stderr, "  -R <PORT> \\\\ RM Port\n");
   fprintf(stderr, "  -S <PORT> \\\\ Scheduler Port\n");
   fprintf(stderr, "  -t <TYPE> \\\\ Startup Type (create)\n");
@@ -502,7 +511,7 @@ void parse_command_line(
 
   ForceCreation = FALSE;
 
-  while ((c = getopt(argc, argv, "A:a:cd:DefhH:L:l:mM:np:R:S:t:uv-:")) != -1)
+  while ((c = getopt(argc, argv, "A:a:cd:DeFfhH:L:l:mM:nPp:R:S:t:uv-:")) != -1)
     {
     switch (c)
       {
@@ -578,7 +587,7 @@ void parse_command_line(
 
           exit(1);
           }
-        a_opt_init = server.sv_attr[SRV_ATR_scheduling].at_val.at_long;
+        a_opt_init = server.sv_attr[SRV_ATR_scheduling].at_val.at_bool;
         pthread_mutex_unlock(server.sv_attr_mutex);
 
         break;
@@ -594,17 +603,28 @@ void parse_command_line(
       case 'd':
 
         path_home = optarg;
+        use_path_home = true;
 
         break;
 
+      // Debug mode
       case 'D':
 
-        TDoBackground = 0;
+        TDoBackground = false;
+        LineBufferOutput = true;
 
         break;
 
       case 'e':
         allow_any_mom = TRUE;
+        break;
+
+      // Do not fork (use when running under systemd)
+      case 'F':
+
+        TDoBackground = false;
+        LineBufferOutput = false;
+
         break;
 
       case 'f':
@@ -745,7 +765,15 @@ void parse_command_line(
           }
 
         break;
-
+        
+      case 'P':    
+    	  
+        paused = TRUE;
+        
+        fprintf(stderr, "Server paused\n");
+        
+        break;
+        
       case 't':
         if (strcmp(optarg, "create") == 0)
           {
@@ -1254,13 +1282,11 @@ void main_loop(void)
   job          *pjob;
   all_jobs_iterator  *iter = NULL;
   long          when = 0;
-  long          timeout = 0;
   long          log = 0;
-  long          scheduling = FALSE;
-  long          sched_iteration = 0;
+  bool          scheduling = false;
+  long          sched_iteration = PBS_SCHEDULE_CYCLE;
   time_t        time_now = time(NULL);
 //  time_t        try_hellos = 0;
-  time_t        update_timeout = 0;
   time_t        update_loglevel = 0;
 
   extern char  *msg_startup2; /* log message   */
@@ -1279,6 +1305,8 @@ void main_loop(void)
   sprintf(log_buf, msg_startup2, sid, LOGLEVEL);
 
   log_event(PBSEVENT_SYSTEM | PBSEVENT_FORCE,PBS_EVENTCLASS_SERVER,msg_daemonname,log_buf);
+    
+  hierarchy_handler.checkAndSendHierarchy(true);
 
   /* do not check nodes immediately as they will initially be marked
      down unless they have already reported in */
@@ -1322,7 +1350,7 @@ void main_loop(void)
     }
 
 #ifdef PBS_VERSION
-  printf("pbs_server is up (svn version - %s, port %d)\n",
+  printf("pbs_server is up (git version - %s, port %d)\n",
       PBS_VERSION, pbs_server_port_dis);
 #else
   printf("pbs_server is up (version - %s, port - %d)\n",
@@ -1334,6 +1362,7 @@ void main_loop(void)
   start_routing_retry_thread();
   start_exiting_retry_thread();
   start_generic_thread(NULL, remove_extra_recycle_jobs);
+  start_generic_thread(NULL, remove_completed_jobs);
 
   while (state != SV_STATE_DOWN)
     {
@@ -1354,36 +1383,16 @@ void main_loop(void)
       }
 #endif
 
-    hierarchy_handler.checkAndSendHierarchy();
+    hierarchy_handler.checkAndSendHierarchy(false);
 
-    if (time_now - last_task_check_time > TASK_CHECK_INTERVAL)
-      enqueue_threadpool_request(check_tasks, NULL, task_pool);
-
-    if ((disable_timeout_check == FALSE) && (time_now > update_timeout))
-      {
-      update_timeout = time_now + UPDATE_TIMEOUT_INTERVAL;
-      get_svr_attr_l(SRV_ATR_tcp_timeout, &timeout);
-
-      /* don't allow timeouts to go below 300 seconds - this is a safety
-       * net for an extremely rare error */
-      if (timeout < 300)
-        {
-        snprintf(log_buf, sizeof(log_buf), "tcp timeout was %ld resetting to 300",
-          timeout);
-        timeout = 300;
-        set_svr_attr(SRV_ATR_tcp_timeout, &timeout);
-        log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, msg_daemonname, log_buf);
-        }
-      
-      DIS_tcp_settimeout(timeout);
-      }
+    enqueue_threadpool_request(check_tasks, NULL, task_pool);
 
     waittime = MAX(1, waittime);
 
     if (state == SV_STATE_RUN)
       {
       /* if time or event says to run scheduler, do it */
-      get_svr_attr_l(SRV_ATR_scheduling, &scheduling);
+      get_svr_attr_b(SRV_ATR_scheduling, &scheduling);
       get_svr_attr_l(SRV_ATR_scheduler_iteration, &sched_iteration);
 
       pthread_mutex_lock(svr_do_schedule_mutex);
@@ -1572,7 +1581,8 @@ void set_globals_from_environment(void)
   if (getenv("PBSDEBUG") != NULL)
     {
     DEBUGMODE = 1;
-    TDoBackground = 0;
+    TDoBackground = false;
+    LineBufferOutput = true;
     }
 
   return;
@@ -1796,17 +1806,19 @@ int main(
   if (getenv("PBSDEBUG") != NULL)
     {
     DEBUGMODE = 1;
-    TDoBackground = 0;
+    TDoBackground = false;
+    LineBufferOutput = true;
     }
 #ifdef DISABLE_DAEMONS
-    TDoBackground = 0;
+    TDoBackground = false;
+    LineBufferOutput = true;
 #endif
 
   /* handle running in the background or not if we're debugging */
 
   if (high_availability_mode)
     {
-    if (daemonize_server(TDoBackground,&sid) == FAILURE)
+    if (daemonize_server(TDoBackground, LineBufferOutput, &sid) == FAILURE)
       {
       exit(2);
       }
@@ -1835,7 +1847,7 @@ int main(
   /* handle running in the background or not if we're debugging */
   if (!high_availability_mode)
     {
-    if (daemonize_server(TDoBackground,&sid) == FAILURE)
+    if (daemonize_server(TDoBackground, LineBufferOutput, &sid) == FAILURE)
       {
       exit(2);
       }
@@ -1946,8 +1958,6 @@ int main(
   pthread_mutex_lock(&job_log_mutex);
   job_log_close(1);
   pthread_mutex_unlock(&job_log_mutex);
-
-  clear_all_alps_reservations();
 
   /* at this point kill the threadpool */
   destroy_request_pool(task_pool);
@@ -2824,19 +2834,19 @@ static void lock_out_ha()
   } /* END lock_out_ha() */
 
 
-
-
 /**
  * daemonize_server()
  * figures out, based on the mode, whether or not to run in the background and does so
  *
  * @param DoBackground - (I) indicates whether or not we should run in the background
+ * @param LineBufferOutput - (I) indicates whether or not stdout/err should be line buffered
  * @param sid - (O) set to the correct pid
  * @return success unless we could not run in the background and we're supposed to
  */
-static int daemonize_server(
+int daemonize_server(
 
-  int  DoBackground,  /* I */
+  bool DoBackground,  /* I */
+  bool LineBufferOutput,  /* I */
   int *sid)           /* O */
 
   {
@@ -2845,12 +2855,15 @@ static int daemonize_server(
 
   if (!DoBackground)
     {
-    /* handle foreground (i.e. debug mode) */
+    /* run in foreground */
 
     *sid = getpid();
 
-    setvbuf(stdout,NULL,_IOLBF,0);
-    setvbuf(stderr,NULL,_IOLBF,0);
+    if (LineBufferOutput)
+      {
+      setvbuf(stdout, NULL, _IOLBF, 0);
+      setvbuf(stderr, NULL, _IOLBF, 0);
+      }
 
     return(SUCCESS);
     }
@@ -3015,7 +3028,7 @@ void restore_attr_default(
 
     case SRV_ATR_PollJobs:
 
-      server.sv_attr[SRV_ATR_PollJobs].at_val.at_long = PBS_POLLJOBS;
+      server.sv_attr[SRV_ATR_PollJobs].at_val.at_bool = true;
 
       break;
 
@@ -3066,6 +3079,18 @@ int unlock_sv_qs_mutex(pthread_mutex_t *sv_qs_mutex, const char *msg_string)
   rc = pthread_mutex_unlock(sv_qs_mutex);
   return(rc);
   }
+
+#ifdef PENABLE_LINUX_CGROUPS
+// Stub out some functions for NUMA
+#ifdef NVIDIA_GPUS
+int Machine::initializeNVIDIADevices(hwloc_obj_t, hwloc_topology_t) {return(0);}
+extern void PCI_Device::initializeGpu(int idx, hwloc_topology_t topology) {}
+#endif
+#ifdef MIC
+int Chip::initializeMICDevices(hwloc_obj_t chip_obj, hwloc_topology_t topology) {return(0);}
+void PCI_Device::initializeMic(int idx, hwloc_topology_t topology) {}
+#endif
+#endif
 
 /* END pbsd_main.c */
 

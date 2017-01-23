@@ -229,22 +229,32 @@
 #include "server_limits.h"
 #include "pbs_job.h"
 #include "utils.h"
-#include "u_tree.h"
+#include "authorized_hosts.hpp"
 #include "mom_hierarchy.h"
 #include "mom_server.h"
 #include "mom_comm.h"
 #include "mcom.h"
 #include "pbs_constants.h" /* Long */
 #include "mom_server_lib.h"
-#include "../lib/Libifl/lib_ifl.h" /* pbs_disconnect_socket */
+#include "lib_ifl.h" /* pbs_disconnect_socket */
 #include "alps_functions.h"
 #include "../lib/Libnet/lib_net.h" /* netaddr */
 #include "net_cache.h"
 #include "mom_config.h"
+#include "mom_func.h"
 #include <string>
 #include <vector>
 #include "container.hpp"
 #include <arpa/inet.h>
+#include <boost/tokenizer.hpp>
+#ifdef PENABLE_LINUX_CGROUPS
+#include "machine.hpp"
+#endif
+#ifdef USE_RESOURCE_PLUGIN
+#include "json/json.h"
+#include "trq_plugin_api.h"
+#include "plugin_internal.h"
+#endif
 
 #define MAX_RETRY_TIME_IN_SECS           (5 * 60)
 #define STARTING_RETRY_INTERVAL_IN_SECS   2
@@ -265,6 +275,11 @@ mom_server     mom_servers[PBS_MAXSERVER];
 int            mom_server_count = 0;
 pbs_net_t      down_svraddrs[PBS_MAXSERVER];
 
+#ifdef PENABLE_LINUX_CGROUPS
+extern Machine this_node;
+#endif
+
+extern uint32_t            global_mic_count;
 extern unsigned int        default_server_port;
 extern char               *path_jobs;
 extern char               *path_home;
@@ -282,8 +297,6 @@ extern long                system_ncpus;
 extern int                 alarm_time; /* time before alarm */
 extern time_t              time_now;
 extern int                 verbositylevel;
-extern AvlTree             okclients;
-extern tlist_head          svr_alljobs;
 extern tlist_head          mom_polljobs;
 extern char                mom_alias[];
 extern int                 updates_waiting_to_send;
@@ -300,18 +313,20 @@ extern container::item_container<received_node *> received_statuses;
 std::vector<std::string>   global_gpu_status;
 std::vector<std::string>   mom_status;
 
+
 extern struct config *rm_search(struct config *where, const char *what);
 
 extern struct rm_attribute *momgetattr(char *str);
 extern char *conf_res(char *resline, struct rm_attribute *attr);
-extern char *dependent(const char *res, struct rm_attribute *attr);
-extern char *reqgres(struct rm_attribute *);
 extern void send_update_soon();
 
 #ifdef NVIDIA_GPUS
 extern int  use_nvidia_gpu;
 #endif
 
+#ifdef MIC
+int check_for_mics(uint32_t& num_engines);
+#endif
 
 int num_stat_update_failures = 0;
 
@@ -567,7 +582,7 @@ int mom_server_add(
 
       if (ipaddr != 0)
         {
-        okclients = AVL_insert(ipaddr, 0, NULL, okclients);
+        auth_hosts.add_authorized_address(ipaddr, 0, "");
         }
 
       }
@@ -582,8 +597,8 @@ int mom_server_add(
 
 void mom_server_stream_error(
 
-  int   stream,
-  char *name,
+  int         stream,
+  const char *name,
   const char *id,
   const char *message)
 
@@ -643,8 +658,8 @@ int mom_server_flush_io(
 int is_compose(
 
   struct tcp_chan *chan,
-  char *server_name,
-  int   command)
+  const char      *server_name,
+  int              command)
 
   {
   int ret;
@@ -678,36 +693,19 @@ int is_compose(
 
 
 
+#ifdef PENABLE_LINUX_CGROUPS
+void gen_layout(
 
+  const char               *name,
+  std::vector<std::string> &status)
 
-
-/**
- *  generate_server_status
- *
- *  This should update the PBS server with the status information
- *  that the resource manager should need.  This should allow for
- *  less trouble on the part of the resource manager.  It can get
- *  this information from the server rather than going to each mom.
- *
- *  This was originally part of is_update_stat, a very complicated
- * routine.  I have broken this into pieces so that the special cases
- * a each in a specific routine.  The routine gen_gen is the one
- * for the general case.
- *
- *  The old is_update_stat used to write directly to a DIS stream.
- * Now we generate the strings in to a buffer, each string terminated
- * with a NULL and a double NULL at the end.
- *
- * Warning: Because of the complexity of the old is_update_stat, it
- * was very hard to break out the special cases.  I actually had to
- * go back and look at older code before there were multiple server
- * arrays to try and figure out what should be happening.
- *
- * If there is some trouble with some status getting back to the
- * pbs_server, this is the place to look.
- */
-
-
+  {
+  std::stringstream layout;
+  layout << name << "=";
+  this_node.displayAsJson(layout, false);
+  status.push_back(layout.str());
+  } // END gen_layout()
+#endif
 
 
 
@@ -730,10 +728,10 @@ void gen_size(
   std::vector<std::string> &status)
 
   {
-  struct config  *ap;
+  struct config       *ap;
 
   struct rm_attribute *attr;
-  char *value;
+  const char          *value;
 
   ap = rm_search(config_array, name);
 
@@ -760,8 +758,6 @@ void gen_size(
 
 
 
-
-
 void gen_arch(
 
   const char               *name,
@@ -782,8 +778,6 @@ void gen_arch(
 
   return;
   }
-
-
 
 
 
@@ -810,8 +804,6 @@ void gen_opsys(
 
 
 
-
-
 void gen_jdata(
 
   const char               *name,
@@ -834,7 +826,7 @@ void gen_gres(
   std::vector<std::string> &status)
 
   {
-  char  *value;
+  const char *value;
 
   value = reqgres(NULL);
 
@@ -855,9 +847,9 @@ void gen_gen(
   std::vector<std::string> &status)
 
   {
-  struct config  *ap;
-  char  *value;
-  char  *ptr;
+  struct config *ap;
+  const char    *value;
+  char          *ptr;
 
   ap = rm_search(config_array,name);
 
@@ -900,6 +892,8 @@ void gen_gen(
 
   return;
   }   /* END gen_gen() */
+
+
 
 void gen_macaddr(
 
@@ -994,7 +988,7 @@ void gen_macaddr(
   s += "=";
   s += mac_addr;
   status.push_back(s);
-  }
+  } // END gen_macaddr()
 
 
 
@@ -1029,15 +1023,137 @@ stat_record stats[] = {
   {"varattr",     gen_gen},
   {"cpuclock",    gen_gen},
   {"macaddr",     gen_macaddr},
+#ifdef PENABLE_LINUX_CGROUPS
+  {"layout",      gen_layout},
+#endif
   {NULL,          NULL}
   };
 
+
+
+/*
+ * add_custom_node_resources()
+ *
+ * Adds the custom things people want to report. This is the interaction point for the
+ * resource plugin for node resource piece
+ */
+
+void add_custom_node_resources()
+
+  {
+#ifdef USE_RESOURCE_PLUGIN
+  static const int                           node_resource_alarm_seconds = 5;
+  static std::map<std::string, std::string>  varattrs;
+  static std::map<std::string, unsigned int> greses;
+  static std::map<std::string, double>       gmetrics;
+  static std::set<std::string>               features;
+
+  if (LOGLEVEL >= 3)
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_MOM, __func__, "Starting the node resource plugin");
+
+  // Set an alarm so the plug-in can't bring the mom to its knees
+  alarm(node_resource_alarm_seconds);
+  report_node_generic_resources(greses);
+  report_node_generic_metrics(gmetrics);
+  report_node_varattrs(varattrs);
+  report_node_features(features);
+  alarm(0);
+
+  if ((varattrs.size() > 0) ||
+      (greses.size() > 0) ||
+      (gmetrics.size() > 0) ||
+      (features.size() > 0))
+    {
+    Json::Value plugin_info;
+    std::string status_entry(PLUGIN_EQUALS);
+
+    if (greses.size() > 0)
+      {
+      Json::Value gres_values;
+
+      for (std::map<std::string, unsigned int>::iterator it = greses.begin();
+           it != greses.end();
+           it++)
+        gres_values[it->first] = it->second;
+
+      plugin_info[GRES] = gres_values;
+      }
+
+    if (varattrs.size() > 0)
+      {
+      Json::Value varattr_info;
+
+      for (std::map<std::string, std::string>::iterator it = varattrs.begin();
+           it != varattrs.end();
+           it++)
+        varattr_info[it->first] = it->second;
+
+      plugin_info[VARATTRS] = varattr_info;
+      }
+
+    if (gmetrics.size() > 0)
+      {
+      Json::Value gmetric_info;
+
+      for (std::map<std::string, double>::iterator it = gmetrics.begin();
+           it != gmetrics.end();
+           it++)
+        gmetric_info[it->first] = it->second;
+
+      plugin_info[GMETRICS] = gmetric_info;
+      }
+
+    if (features.size() > 0)
+      {
+      std::string feature_list;
+
+      for (std::set<std::string>::iterator it = features.begin(); it != features.end(); it++)
+        {
+        if (feature_list.size() > 0)
+          feature_list += ",";
+
+        feature_list += *it;
+        }
+
+      plugin_info[FEATURES] = feature_list;
+      }
+
+    status_entry += plugin_info.toStyledString();
+    mom_status.push_back(status_entry);
+    }
+
+  if (LOGLEVEL >= 3)
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_MOM, __func__, "Finished the node resource plugin");
+#endif
+
+  } // END add_custom_node_resources()
 
 
 
 /**
  * generate_server_status
  *
+ *  This should update the PBS server with the status information
+ *  that the resource manager should need.  This should allow for
+ *  less trouble on the part of the resource manager.  It can get
+ *  this information from the server rather than going to each mom.
+ *
+ *  This was originally part of is_update_stat, a very complicated
+ * routine.  I have broken this into pieces so that the special cases
+ * a each in a specific routine.  The routine gen_gen is the one
+ * for the general case.
+ *
+ *  The old is_update_stat used to write directly to a DIS stream.
+ * Now we generate the strings in to a buffer, each string terminated
+ * with a NULL and a double NULL at the end.
+ *
+ * Warning: Because of the complexity of the old is_update_stat, it
+ * was very hard to break out the special cases.  I actually had to
+ * go back and look at older code before there were multiple server
+ * arrays to try and figure out what should be happening.
+ *
+ * If there is some trouble with some status getting back to the
+ * pbs_server, this is the place to look.
  */
 
 void generate_server_status(
@@ -1048,11 +1164,12 @@ void generate_server_status(
   int   i;
   std::stringstream ss;
 
-  /* identify which vnode this is */
 #ifdef NUMA_SUPPORT
+  /* identify which vnode this is */
   ss << NUMA_KEYWORD;
   ss << numa_index;
   status.push_back(ss.str());
+  ss.str("");
 #endif /* NUMA_SUPPORT */
 
   for (i = 0;stats[i].name != NULL;i++)
@@ -1067,8 +1184,14 @@ void generate_server_status(
     alarm(0);
     }  /* END for (i) */
 
+  ss << "version=" << PACKAGE_VERSION;
+  status.push_back(ss.str());
+
+  add_custom_node_resources();
+
   TORQUE_JData[0] = '\0';
   }  /* END generate_server_status */
+
 
 
 int should_request_cluster_addrs()
@@ -1089,14 +1212,22 @@ int should_request_cluster_addrs()
   } /* END should_request_cluster_addrs() */
 
 
+
 /* 
  * writes the header for a server status update
+ *
+ *  Header format
+ *
+ *   Protocol | Version | Command (IS_STATUS) | mom service port | mom manager port 
+ *   The following two lines are added to the header if cgroups are enabled.
+ *   | available sockets | available numa_nodes | available cores | available threads
+ *   | total sockets     | total numa_nodes     | total cores     | total threads
  */
 int write_update_header(
     
   struct tcp_chan *chan,
   const char *id,
-  char       *name)
+  const char *name)
 
   {
   int  ret;
@@ -1126,10 +1257,9 @@ int write_update_header(
         }
       }
     }
-  
+
   return(ret);
   } /* END write_update_header() */
-
 
 
 
@@ -1150,16 +1280,16 @@ int write_my_server_status(
   /* put each string into the message. */
   for (unsigned int i = 0; i < strings.size(); i++)
     {
+    const char *str_to_write = strings[i].c_str();
+
     if (LOGLEVEL >= 7)
       {
-      sprintf(log_buffer,"%s: sending to server \"%s\"",
+      sprintf(log_buffer,"%s: sending to server \"%s\", i = %u size = %d",
         id,
-        strings[i].c_str());
+        str_to_write, i, (int)strings.size());
       
       log_record(PBSEVENT_SYSTEM,0,id,log_buffer);
       }
-
-    const char *str_to_write = strings[i].c_str();
     
     if ((ret = diswst(chan, str_to_write)) != DIS_SUCCESS)
       {
@@ -1178,7 +1308,7 @@ int write_my_server_status(
           nc = (node_comm_t *)dest;
           nc->stream = chan->sock;
           
-          node_comm_error(nc,"Error writing strings to");
+          node_comm_error(nc, "Error writing strings to");
           
           break;
         } /* END switch (mode) */
@@ -1261,9 +1391,6 @@ int write_cached_statuses(
     } /* END iterate over received statuses */
 
   delete iter;
-  
-  if (ret == DIS_SUCCESS)
-    updates_waiting_to_send = 0;
 
   received_statuses.unlock();
   return(ret);
@@ -1408,7 +1535,7 @@ void node_comm_error(
   const char *message)
  
   {
-  snprintf(log_buffer,sizeof(log_buffer), "%s %s", message, nc->name);
+  snprintf(log_buffer,sizeof(log_buffer), "%s %s", message, nc->name.c_str());
   log_err(-1, "Node communication process",log_buffer);
   
   close(nc->stream);
@@ -1433,7 +1560,7 @@ int write_status_strings(
   if (LOGLEVEL >= 9)
     {
     snprintf(log_buffer, sizeof(log_buffer),
-      "Attempting to send status update to mom %s", nc->name);
+      "Attempting to send status update to mom %s", nc->name.c_str());
     log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, log_buffer);
     }
  
@@ -1441,7 +1568,7 @@ int write_status_strings(
     {
     }
   /* write protocol */
-  else if ((rc = write_update_header(chan,__func__,nc->name)) != DIS_SUCCESS)
+  else if ((rc = write_update_header(chan,__func__,nc->name.c_str())) != DIS_SUCCESS)
     {
     }
   else if ((rc = write_my_server_status(chan,__func__, strings, nc, UPDATE_TO_SERVER)) != DIS_SUCCESS)
@@ -1459,7 +1586,7 @@ int write_status_strings(
     if (LOGLEVEL >= 7)
       {
       snprintf(log_buffer, sizeof(log_buffer),
-        "Successfully sent status update to mom %s", nc->name);
+        "Successfully sent status update to mom %s", nc->name.c_str());
       log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER,__func__,log_buffer);
       }
     }
@@ -1680,6 +1807,11 @@ void mom_server_all_update_stat(void)
     global_gpu_status.clear();
     add_gpu_status(global_gpu_status);
 #endif
+
+#ifdef MIC
+    check_for_mics(global_mic_count);
+#endif 
+
     /* It is possible that pbs_server may get busy and start queing incoming requests and not be able 
        to process them right away. If pbs_mom is waiting for a reply to a statuys update that has 
        been queued and at the same time the server makes a request to the mom we can get stuck
@@ -1709,6 +1841,7 @@ void mom_server_all_update_stat(void)
       ForceServerUpdate = false;
       LastServerUpdateTime = time_now;
       UpdateFailCount = 0;
+      updates_waiting_to_send = 0;
     
       received_node                                             *rn;
       received_statuses.lock();
@@ -1732,9 +1865,17 @@ void mom_server_all_update_stat(void)
         }
 
       if (buf[0] != '0')
-          num_stat_update_failures++;
+        num_stat_update_failures++;
       else
-          num_stat_update_failures = 0;
+        {
+        num_stat_update_failures = 0;
+        for (int sindex = 0; sindex < PBS_MAXSERVER; sindex++)
+          {
+          if (mom_servers[sindex].pbs_servername[0] == '\0')
+            continue;
+          mom_servers[sindex].MOMLastSendToServerTime = time_now;
+          }
+        }
 
       return;
       }
@@ -2009,12 +2150,6 @@ void mom_server_update_receive_time_by_ip(
 /**
 ** Modified by Tom Proett <proett@nas.nasa.gov> for PBS.
 */
-
-/*tree *okclients = NULL;*/ /* tree of ip addrs */
-AvlTree okclients = NULL;
-
-
-
 /**
  * mom_server_valid_message_source
  *
@@ -2094,7 +2229,7 @@ mom_server *mom_server_valid_message_source(
 
             if (ipaddr == server_ip)
               {
-              okclients = AVL_insert(ipaddr, 0, NULL, okclients);
+              auth_hosts.add_authorized_address(ipaddr, 0, "");
 
               return(pms);
               }
@@ -2154,7 +2289,7 @@ int process_host_name(
       }
 
     /* add to acceptable host tree */
-    okclients = AVL_insert(ipaddr, rm_port, NULL, okclients);
+    auth_hosts.add_authorized_address(ipaddr, rm_port, "");
     }
   else
     {
@@ -2271,7 +2406,7 @@ void sort_paths()
 void reset_okclients()
 
   {
-  okclients = AVL_clear_tree(okclients);
+  auth_hosts.clear();
 
   // re-add each server
   for (int sindex = 0;sindex < PBS_MAXSERVER;sindex++)
@@ -2298,14 +2433,14 @@ void reset_okclients()
 
         if (ipaddr != 0)
           {
-          okclients = AVL_insert(ipaddr, 0, NULL, okclients);
+          auth_hosts.add_authorized_address(ipaddr, 0, "");
           }
         }
       }
     }
 
   // add localhost
-  okclients = AVL_insert(localaddr, 0, NULL, okclients);
+  auth_hosts.add_authorized_address(localaddr, 0, "");
 
   // BMD: add the node's ip address
 
@@ -2325,11 +2460,7 @@ int read_cluster_addresses(
   int             path_complete = FALSE;
   int             something_added;
   char           *str;
-  char           *okclients_list;
   std::string      hierarchy_file = "/n";
-  long            list_size;
-  long            list_len = 0;
-
   if (mh != NULL)
     free_mom_hierarchy(mh);
 
@@ -2422,17 +2553,12 @@ int read_cluster_addresses(
     sort_paths();
 
     /* log the hierrarchy */
-    list_size = MAXLINE * 2;
-    if ((okclients_list = (char *)calloc(1, list_size)) != NULL)
-      {
-      AVL_list(okclients, &okclients_list, &list_len, &list_size);
-      snprintf(log_buffer, sizeof(log_buffer),
-        "Successfully received the mom hierarchy file. My okclients list is '%s', and the hierarchy file is '%s'",
-        okclients_list, hierarchy_file.c_str());
-      log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_NODE, __func__, log_buffer);
-
-      free(okclients_list);
-      }
+    std::string list;
+    auth_hosts.list_authorized_hosts(list);
+    snprintf(log_buffer, sizeof(log_buffer),
+      "Successfully received the mom hierarchy file. My okclients list is '%s', and the hierarchy file is '%s'",
+      list.c_str(), hierarchy_file.c_str());
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_NODE, __func__, log_buffer);
  
     /* tell the mom to go ahead and send an update to pbs_server */
     first_update_time = 0;
@@ -2501,7 +2627,7 @@ void mom_is_request(
     {
     ipaddr = ntohl(pAddr->sin_addr.s_addr);
 
-    if (AVL_is_in_tree_no_port_compare(ipaddr, 0, okclients) == 0)
+    if (auth_hosts.is_authorized(ipaddr) == false)
       {
       if (err_msg)
         {
@@ -2747,10 +2873,13 @@ void check_busy(
 
   if ((auto_max_load != NULL) || (auto_ideal_load != NULL))
     {
-    if ((pjob = (job *)GET_NEXT(svr_alljobs)) != NULL)
+    std::list<job *>::iterator iter;
+
+    for (iter = alljobs_list.begin(); iter != alljobs_list.end(); iter++)
       {
-      for (;pjob != NULL;pjob = (job *)GET_NEXT(pjob->ji_alljobs))
-        numvnodes += pjob->ji_numvnod;
+      pjob = *iter;
+
+      numvnodes += pjob->ji_numvnod;
       }
 
     mymax_load = compute_load_threshold(auto_max_load, numvnodes, max_load_val);
@@ -2849,13 +2978,14 @@ void check_state(
 #if MOMCHECKLOCALSPOOL
     {
     char *sizestr;
-    u_Long freespace;
+    u_Long freespace = 0;
     extern char *size_fs(char *);  /* FIXME: put this in a header file */
 
     /* size_fs() is arch-specific method in mom_mach.c */
     sizestr = size_fs(path_spool);  /* returns "free:total" */
 
-    freespace = atoL(sizestr);
+    if (sizestr != NULL)
+      freespace = atoL(sizestr);
 
     if (freespace < TMINSPOOLBLOCKS)
       {
@@ -2900,7 +3030,7 @@ void check_state(
           if (LOGLEVEL >= 1)
             {
             snprintf(log_buffer,sizeof(log_buffer),
-            "Setting node to down. The node health script output the following message:\n%s\n",
+            "Setting node to down. The node health script output the following message: %s",
             tmpPBSNodeMsgBuf);
             log_event(PBSEVENT_SYSTEM,PBS_EVENTCLASS_NODE,__func__,log_buffer);
             }
@@ -2912,7 +3042,7 @@ void check_state(
           if (LOGLEVEL >= 3)
             {
             snprintf(log_buffer,sizeof(log_buffer),
-              "Node health script ran and says the node is healthy with this message:\n%s\n",
+              "Node health script ran and says the node is healthy with this message: %s",
               tmpPBSNodeMsgBuf);
             log_event(PBSEVENT_SYSTEM,PBS_EVENTCLASS_NODE,__func__,log_buffer);
             }
@@ -3056,7 +3186,7 @@ void state_to_server(
     return;    /* Do nothing, just return */
     }
 
-  stream = tcp_connect_sockaddr((struct sockaddr *)&pms->sock_addr, sizeof(pms->sock_addr));
+  stream = tcp_connect_sockaddr((struct sockaddr *)&pms->sock_addr, sizeof(pms->sock_addr), true);
 
   if (IS_VALID_STREAM(stream))
     {
@@ -3263,6 +3393,45 @@ int mom_open_socket_to_jobs_server(
   }  /* END mom_open_socket_to_jobs_server() */
 
 
+int mom_open_socket_to_jobs_server_with_retries(
+
+  job        *pjob,
+  const char *caller_id,
+  void       *(*message_handler)(void *),
+  int         retry_limit)
+
+  {
+  int retries = -1;
+  int sock = -1;
+
+  while ((sock < 0) &&
+         (retries < retry_limit))
+    {
+    sock = mom_open_socket_to_jobs_server(pjob, __func__, message_handler);
+
+    switch (errno)
+      {
+      case EINTR:
+      case ETIMEDOUT:
+      case EINPROGRESS:
+
+        retries++;
+
+        break;
+
+      default:
+
+        retries = retry_limit;
+
+        break;
+      }
+    }
+
+  return(sock);
+  } // END mom_open_socket_to_jobs_server_with_retries()
+
+
+
 /**
  * clear_down_mom_servers
  *
@@ -3311,6 +3480,110 @@ int is_mom_server_down(
   }
 
 
+#define THIS_HOST_LEN 256
+/*
+ * is_for_this_host
+ *
+ * Parses the device_string and compares the host for
+ * the device in the string to see if it is the same
+ * as this host. If yes return true, else return false
+ *
+ * @param device_spec - string with the job specification 
+ *                   indicating the node and device index to be run 
+ *                   in the job.
+ *
+ */
+
+bool is_for_this_host(
+    
+  std::string device_spec, 
+  const char *suffix)
+
+  {
+  char  *ptr;
+  char  temp_char_string[THIS_HOST_LEN];
+
+  snprintf(temp_char_string, sizeof(temp_char_string), "%s", device_spec.c_str());
+
+  /* peel off the -device part of the device_spec */
+  ptr = strstr(temp_char_string, suffix);
+  if (ptr != NULL)
+    *ptr = '\0';
+  else
+    return(false);
+
+  if (!strcmp(mom_alias, temp_char_string))
+    return(true);
+
+  return(false);
+  }
+
+void get_device_indices(
+  
+  const char *device_str, 
+  std::vector<unsigned int> &device_indices, 
+  const char *suffix)
+
+  {
+  std::string device_string = device_str;
+  std::vector<std::string> device_tokens;
+  boost::char_separator<char> sep("+");
+  boost::tokenizer< boost::char_separator<char> > tokens(device_string, sep);
+
+  /* reset device_indices so it is empty */
+  /* The string comes in with the format of
+     <hostname>-gpu/<index1>+<hostname>-gpu/<index2>+...
+   */
+  device_indices.clear();
+
+  /* pull out each element of the device string */
+  //BOOST_FOREACH (const std::string& t, tokens)
+  //  {
+  //  device_tokens.push_back(t);
+  //  }
+
+  for (boost::tokenizer< boost::char_separator<char> >::iterator t=tokens.begin(); t != tokens.end(); ++t)
+    {
+    device_tokens.push_back(*t);
+    }
+
+  /* We now have each device request in the form of <host>-device/x where 
+     x is the indices of the device to allocate. See the spec is for this host
+     and add the index to device_indices if it is. */
+  for (std::vector<std::string>::iterator device_spec = device_tokens.begin(); device_spec != device_tokens.end(); ++device_spec)
+    {
+    std::string host_name_part;
+    std::string device_index_part;
+    std::vector<std::string> parts;
+    boost::char_separator<char> device_sep("/");
+    boost::tokenizer< boost::char_separator<char> > device_spec_parts(*device_spec, device_sep);
+
+/*    BOOST_FOREACH (const std::string& tok, device_spec_parts)
+      {
+      parts.push_back(tok);
+      }*/
+
+    for (boost::tokenizer< boost::char_separator<char> >::iterator tok=device_spec_parts.begin(); tok != device_spec_parts.end(); tok++)
+      {
+      parts.push_back(*tok);
+      }
+
+    /* parts should have two entries. */
+    /* The first part will be the host name */
+    host_name_part = parts[0].c_str();
+    
+    /* The second part will be the index */
+    device_index_part = parts[1].c_str();
+
+    if (is_for_this_host(host_name_part, suffix) == true)
+      {
+      unsigned int device_index = atoi(device_index_part.c_str());
+
+      device_indices.push_back(device_index);
+      }
+
+    }
+  }
 
 
 

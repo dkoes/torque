@@ -97,7 +97,7 @@
 #include <pthread.h>
 
 #include "libpbs.h"
-#include "../lib/Libifl/lib_ifl.h" /* netaddr_long */
+#include "lib_ifl.h" /* netaddr_long */
 #include "pbs_error.h"
 #include "server_limits.h"
 #include "pbs_nodes.h"
@@ -119,7 +119,6 @@
 #include "dis.h"
 #include "array.h"
 #include "req_stat.h"
-#include "../lib/Libutils/u_lock_ctl.h" /* lock_node, unlock_node */
 #include "../lib/Libnet/lib_net.h" /* globalset_del_sock */
 #include "svr_func.h" /* get_svr_attr_* */
 #include "req_getcred.h" /* req_altauthenuer */ 
@@ -304,9 +303,9 @@ bool request_passes_acl_check(
   unsigned long  conn_addr)
   
   {
-  long acl_enable = FALSE;
+  bool acl_enable = false;
 
-  get_svr_attr_l(SRV_ATR_acl_host_enable, &acl_enable);
+  get_svr_attr_b(SRV_ATR_acl_host_enable, &acl_enable);
   if (acl_enable)
     {
     /* acl enabled, check it; always allow myself and nodes */
@@ -325,7 +324,7 @@ bool request_passes_acl_check(
       }
 
     if (isanode != NULL)
-      unlock_node(isanode, __func__, NULL, LOGLEVEL);
+      isanode->unlock_node(__func__, NULL, LOGLEVEL);
     }
   
   return(true);
@@ -460,11 +459,15 @@ batch_request *read_request_from_socket(
 
   if (request_passes_acl_check(request, conn_addr) == false)
     {
-    char tmpLine[MAXLINE];
-    snprintf(tmpLine, sizeof(tmpLine), "request not authorized from host %s",
-      request->rq_host);
-    req_reject(PBSE_BADHOST, 0, request, NULL, tmpLine);
-    return(NULL);
+    /* See if the request is in the limited acl list */
+    if (limited_acls.is_authorized(request->rq_host, request->rq_user) == false)
+      {
+      char tmpLine[MAXLINE];
+      snprintf(tmpLine, sizeof(tmpLine), "request not authorized from host %s",
+        request->rq_host);
+      req_reject(PBSE_BADHOST, 0, request, NULL, tmpLine);
+      return(NULL);
+      }
     }
 
   return(request);
@@ -679,9 +682,11 @@ int process_request(
       case PBS_BATCH_JobCred:
       case PBS_BATCH_MoveJob:
       case PBS_BATCH_QueueJob:
+      case PBS_BATCH_QueueJob2:
       case PBS_BATCH_RunJob:
       case PBS_BATCH_StageIn:
       case PBS_BATCH_jobscript:
+      case PBS_BATCH_jobscript2:
 
         req_reject(PBSE_SVRDOWN, 0, request, NULL, NULL);
 
@@ -712,8 +717,8 @@ int process_request(
 
 int dispatch_request(
 
-  int                   sfds,    /* I */
-  struct batch_request *request) /* I */
+  int            sfds,    /* I */
+  batch_request *request) /* I */
 
   {
   int   rc = PBSE_NONE;
@@ -730,10 +735,17 @@ int dispatch_request(
 
   switch (request->rq_type)
     {
+    case PBS_BATCH_QueueJob2:
+
+      net_add_close_func(sfds, close_quejob);
+      rc = req_quejob(request, 2);
+      
+      break;
+
     case PBS_BATCH_QueueJob:
 
       net_add_close_func(sfds, close_quejob);
-      rc = req_quejob(request);
+      rc = req_quejob(request, 1);
       
       break;
 
@@ -742,10 +754,16 @@ int dispatch_request(
       rc = req_jobcredential(request);
       break;
 
+    case PBS_BATCH_jobscript2:
+     
+      rc = req_jobscript(request, true);
+      
+      break;
+
 
     case PBS_BATCH_jobscript:
      
-      rc = req_jobscript(request);
+      rc = req_jobscript(request, false);
       
       break;
 
@@ -756,6 +774,12 @@ int dispatch_request(
       
       break;
 
+
+    case PBS_BATCH_Commit2:
+      
+      rc = req_commit2(request);
+      
+      break;
 
     case PBS_BATCH_Commit:
       
@@ -874,8 +898,8 @@ int dispatch_request(
       break;
 
     case PBS_BATCH_RunJob:
-
     case PBS_BATCH_AsyrunJob:
+
       globalset_del_sock(request->rq_conn);
       rc = req_runjob(request);
 
@@ -1018,7 +1042,7 @@ struct batch_request *alloc_br(
 
   struct batch_request *req = NULL;
 
-  if ((req = (struct batch_request *)calloc(1, sizeof(struct batch_request))) == NULL)
+  if ((req = (batch_request *)calloc(1, sizeof(batch_request))) == NULL)
     {
     log_err(errno, __func__, msg_err_malloc);
     }
@@ -1077,7 +1101,7 @@ void close_quejob(
           pjob->ji_qs.ji_state = JOB_STATE_QUEUED;
           pjob->ji_qs.ji_substate = JOB_SUBSTATE_QUEUED;
 
-          int rc = svr_enquejob(pjob, FALSE, NULL, false);
+          int rc = svr_enquejob(pjob, FALSE, NULL, false, false);
           
           if ((rc == PBSE_JOBNOTFOUND) ||
               (rc == PBSE_JOB_RECYCLED))
@@ -1136,9 +1160,16 @@ void free_br(
     preq->rq_extend = NULL;
     }
 
+  if (preq->rq_extra)
+    {
+    free(preq->rq_extra);
+    preq->rq_extra = NULL;
+    }
+
   switch (preq->rq_type)
     {
     case PBS_BATCH_QueueJob:
+    case PBS_BATCH_QueueJob2:
 
       free_attrlist(&preq->rq_ind.rq_queuejob.rq_attr);
 
@@ -1155,8 +1186,8 @@ void free_br(
       break;
 
     case PBS_BATCH_MvJobFile:
-
     case PBS_BATCH_jobscript:
+    case PBS_BATCH_jobscript2:
 
       if (preq->rq_ind.rq_jobfile.rq_data)
         {
@@ -1258,7 +1289,6 @@ void free_br(
       break;
 
     case PBS_BATCH_RunJob:
-
     case PBS_BATCH_AsyrunJob:
 
       if (preq->rq_ind.rq_run.rq_destin)
@@ -1279,8 +1309,6 @@ void free_br(
 
   return;
   }  /* END free_br() */
-
-
 
 
 

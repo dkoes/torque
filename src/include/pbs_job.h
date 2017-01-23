@@ -1,5 +1,4 @@
-/*
-*         OpenPBS (Portable Batch System) v2.3 Software License
+/*         OpenPBS (Portable Batch System) v2.3 Software License
 *
 * Copyright (c) 1999-2000 Veridian Information Solutions, Inc.
 * All rights reserved.
@@ -93,6 +92,9 @@
 #include <limits.h>
 #include <map>
 #include <set>
+#include <string>
+#include <vector>
+
 #include "server_limits.h"
 #include "list_link.h"
 #include "pbs_ifl.h"
@@ -101,8 +103,8 @@
 #include "mom_hierarchy.h"
 #include "tcp.h" /* tcp_chan */
 #include "net_connect.h"
-#include <string>
-#include <vector>
+#include "job_host_data.hpp"
+#include "json/json.h"
 
 
 #define SAVEJOB_BUF_SIZE 8192
@@ -125,19 +127,25 @@ struct job_array;
 
 #define JOB_REPORTED_POLL_TIMEOUT 300
 #define JOB_CONDENSED_TIMEOUT     45
+#define REQ_VERSION_1             1
+#define REQ_VERSION_2             2
 
 /*
  * The depend_job structure is used to record the name and location
  * of each job which is involved with the dependency
  */
 
-typedef struct depend_job
+class depend_job
   {
-  short dc_state; /* released / ready to run (syncct)  */
-  long  dc_cost; /* cost of this child (syncct)   */
-  char  dc_child[PBS_MAXSVRJOBID+1]; /* child (dependent) job  */
-  char  dc_svr[PBS_MAXSERVERNAME+1]; /* server owning job  */
-  } depend_job;
+  public:
+  short       dc_state; /* released / ready to run (syncct)  */
+  long        dc_cost; /* cost of this child (syncct)   */
+  std::string dc_child;
+
+  depend_job() : dc_state(0), dc_cost(0), dc_child()
+    {
+    }
+  };
 
 /*
  * Dependent Job Structures
@@ -151,29 +159,64 @@ typedef struct depend_job
  * ready are also recorded.
  */
 
-struct depend
+class depend
   {
-  list_link dp_link; /* link to next dependency, if any       */
-  short   dp_type; /* type of dependency (all)           */
-  short   dp_numexp; /* num jobs expected (on or syncct only) */
-  short   dp_numreg; /* num jobs registered (syncct only)     */
-  short   dp_released; /* This job released to run (syncwith)   */
+  public:
+  list_link                 dp_link; /* link to next dependency, if any       */
+  short                     dp_type; /* type of dependency (all)           */
+  short                     dp_numexp; /* num jobs expected (on or syncct only) */
+  short                     dp_numreg; /* num jobs registered (syncct only)     */
+  short                     dp_released; /* This job released to run (syncwith)   */
   std::vector<depend_job *> dp_jobs;
+
+  depend() : dp_type(0), dp_numexp(0), dp_numreg(0), dp_released(0), dp_jobs()
+    {
+    CLEAR_LINK(this->dp_link);
+    }
+
+  depend(int type) : dp_type(type), dp_numexp(0), dp_numreg(0), dp_released(0), dp_jobs()
+    {
+    CLEAR_LINK(this->dp_link);
+    }
+
+  ~depend()
+    {
+    unsigned int dp_jobs_size = this->dp_jobs.size();
+    for (unsigned int i = 0; i < dp_jobs_size; i++)
+      delete this->dp_jobs[i];
+
+    delete_link(&this->dp_link);
+    }
   };
 
-typedef struct array_depend_job
+class array_depend_job
   {
+  public:
   /* in this case, the child is the job depending on the array */
-  char dc_child[PBS_MAXSVRJOBID+1];
-  char dc_svr[PBS_MAXSERVERNAME+1];
-  int  dc_num;
-  } array_depend_job;
+  std::string dc_child;
+  int         dc_num;
 
-struct array_depend
+  array_depend_job() : dc_child(), dc_num(0)
+    {
+    }
+  };
+
+class array_depend
   {
-  list_link  dp_link;
-  short      dp_type;
+  public:
+  short                           dp_type;
   std::vector<array_depend_job *> dp_jobs;
+
+  array_depend() : dp_type(0), dp_jobs()
+    {
+    }
+
+  ~array_depend()
+    {
+    unsigned int dp_jobs_size = this->dp_jobs.size();
+    for (unsigned int i = 0; i < dp_jobs_size; i++)
+      delete this->dp_jobs[i];
+    }
   };
 
 struct dependnames
@@ -384,9 +427,15 @@ enum job_atr
   JOB_ATR_system_start_time,
   JOB_ATR_nppcu, /* Hyper-Thread handling for ALPS (Cray) */
   JOB_ATR_login_node_key,
+  JOB_ATR_request_version,
+  JOB_ATR_req_information,
 #include "site_job_attr_enum.h"
 
   JOB_ATR_copystd_on_rerun, /* copy std files to user's specified on reurn */
+  JOB_ATR_cpuset_string,
+  JOB_ATR_memset_string,
+  JOB_ATR_user_kill_delay,
+  JOB_ATR_idle_slot_limit,
   JOB_ATR_UNKN,  /* the special "unknown" type    */
   JOB_ATR_LAST  /* This MUST be LAST */
   };
@@ -399,6 +448,9 @@ enum job_atr
 extern attribute_def job_attr_def[];
 
 #ifdef PBS_MOM
+
+#define COPY_FILE_FAIL 1
+
 #include "tm_.h"
 
 /*
@@ -438,6 +490,9 @@ typedef struct noderes
   long nr_vmem; /* virtual memory */
   } noderes;
 
+typedef std::map< pid_t, pid_t, std::less< int > > pid2jobsid_map_t;
+typedef std::map<pid_t, int> pid2procarrayindex_map_t;
+typedef std::set<pid_t> job_pid_set_t;
 
 typedef std::map< pid_t, pid_t, std::less< int > > pid2jobsid_map_t;
 typedef std::map<pid_t, int> pid2procarrayindex_map_t;
@@ -468,6 +523,16 @@ typedef std::set<pid_t> job_pid_set_t;
 #endif    /* USESAVEDRESOURCES */
 
 #endif /* MOM */
+
+#ifdef PBS_MOM
+// forward declare task so it can be part of the job
+class task;
+#endif
+
+#define COUNTED_GLOBALLY 0x0001
+#define COUNTED_IN_QUEUE 0x0010
+
+#define NO_OBIT_REPLY    -2
 
 
 typedef struct
@@ -500,6 +565,7 @@ typedef struct
   int       upfds;
   int       mjspipe[2];     /* MOM to job starter for ack */
   int       downfds;
+  char     *buf;           /* Buffer pointer to hold memory allocated for pwdp */
   } pjobexec_t;
 
 
@@ -592,23 +658,19 @@ struct jobfix
  * @see job_free() - free job structure
  */
 
-struct job
+#ifdef PBS_MOM
+typedef struct job
   {
   /* Note: these members, up to ji_qs, are not saved to disk
             (except for ji_stdout, ji_stderr) */
 
-#ifndef PBS_MOM
-  list_link       ji_jobque_array_sum;
-#else
   list_link       ji_jobque;  /* used for polling in mom */
-#endif
   /* MOM: links to polled jobs */
   time_t  ji_momstat; /* SVR: time of last status from MOM */
   /* MOM: time job suspend (Cray) */
   int  ji_modified; /* struct changed, needs to be saved */
   int  ji_momhandle; /* open connection handle to MOM */
   int  ji_radix;    /* number of nodes in a job radix. used for qsub -W job_radix option  */
-#ifdef PBS_MOM    /* MOM ONLY */
 
   list_link       ji_alljobs; /* link to next job in server job list */
   struct grpcache *ji_grpcache; /* cache of user's groups */
@@ -634,7 +696,8 @@ struct job
   hnodent        *ji_sisters; /* ptr to job host management stuff for intermediate moms */
   vnodent        *ji_vnods; /* ptr to job vnode management stuff */
   noderes        *ji_resources; /* ptr to array of node resources */
-  tlist_head     ji_tasks; /* list of task structs */
+  std::vector<task *> *ji_tasks; /* list of tasks */
+  std::map<std::string, job_host_data> *ji_usages; // Current proc usage on hosts
   tm_node_id     ji_nodekill; /* set to nodeid requesting job die */
   int            ji_flags; /* mom only flags */
   char           ji_globid[64]; /* global job id */
@@ -654,33 +717,24 @@ struct job
   int            ji_examined;
   time_t         ji_kill_started;      /* time since we've begun killing the job - MS only */
   time_t         ji_joins_sent;        /* time we sent out the join requests - MS only */
+  time_t         ji_obit_busy_time;      // the timestamp of when the obit got a busy message
+  time_t         ji_obit_minus_one_time; // the timestamp of when the obit got a -1 
+  time_t         ji_exited_time;         // server has indicated that this job has exited 
+  time_t         ji_obit_sent;           // The time the obit was sent
+  time_t         ji_state_set;           // The time we set the current state
   int            ji_joins_resent;      /* set to TRUE when rejoins have been sent */
   bool           ji_stats_done;      /* Job has terminated and stats have been collected */
   job_pid_set_t  *ji_job_pid_set;    /* pids of child processes forked from TMomFinalizeJob2
                                         and tasks from start_process. */
+  std::set<pid_t> *ji_sigtermed_processes; // set of pids to which we've sent a SIGTERM
 
-#else     /* END MOM ONLY */
+#ifdef PENABLE_LINUX_CGROUPS
+  bool             ji_cgroups_created;
+#endif
 
-  int               ji_has_delete_nanny;
-  struct pbs_queue *ji_qhdr; /* current queue header */
-  int               ji_lastdest; /* last destin tried by route */
-  int               ji_retryok; /* ok to retry, some reject was temp */
-  std::vector<std::string> *ji_rejectdest; /* list of rejected destinations */
-  char              ji_arraystructid[PBS_MAXSVRJOBID + 1]; /* id of job array for this job */
-  int               ji_is_array_template;    /* set to TRUE if this is a "template job" for a job array*/
-  int               ji_have_nodes_request; /* set to TRUE if node spec uses keyword nodes */
+  // Usage information coming from a plug-in
+  std::map<std::string, std::string> *ji_custom_usage_info;
 
-  /* these three are only used for heterogeneous jobs */
-  struct job       *ji_external_clone; /* the sub-job on the external (to the cray) nodes */
-  struct job       *ji_cray_clone;     /* the sub-job on the cray nodes */
-  struct job       *ji_parent_job;     /* parent job (only populated on the sub-jobs */
-
-  int               ji_internal_id;
-  pthread_mutex_t  *ji_mutex;
-  char              ji_being_recycled;
-  time_t            ji_last_reported_time;
-  time_t            ji_mod_time;       // the timestamp of when the state last changed
-#endif/* PBS_MOM */   /* END SERVER ONLY */
   int               ji_commit_done;   /* req_commit has completed. If in routing queue job can now be routed */
 
   /*
@@ -709,7 +763,87 @@ struct job
 
   int  maxAdoptedTaskId;  /* DJH 27 Feb 2002. Keep track of the task ids
                              the local mom allocates to adopted tasks; */
+  } job;
+
+#else
+// for the server
+class job
+  {
+  private:
+  // Usage information coming from a plug-in
+  std::map<std::string, std::string> ji_plugin_usage_info;
+
+  public:
+
+  /* MOM: links to polled jobs */
+  time_t  ji_momstat; /* SVR: time of last status from MOM */
+  /* MOM: time job suspend (Cray) */
+  int  ji_modified; /* struct changed, needs to be saved */
+  int  ji_momhandle; /* open connection handle to MOM */
+  int  ji_radix;    /* number of nodes in a job radix. used for qsub -W job_radix option  */
+
+  bool              ji_has_delete_nanny;
+  struct pbs_queue *ji_qhdr; /* current queue header */
+  int               ji_lastdest; /* last destin tried by route */
+  int               ji_retryok; /* ok to retry, some reject was temp */
+  std::vector<std::string>  ji_rejectdest; /* list of rejected destinations */
+  char              ji_arraystructid[PBS_MAXSVRJOBID + 1]; /* id of job array for this job */
+  bool              ji_is_array_template;    /* set to TRUE if this is a "template job" for a job array*/
+  bool              ji_have_nodes_request; /* set to TRUE if node spec uses keyword nodes */
+
+  /* these three are only used for heterogeneous jobs */
+  job       *ji_external_clone; /* the sub-job on the external (to the cray) nodes */
+  job       *ji_cray_clone;     /* the sub-job on the cray nodes */
+  job       *ji_parent_job;     /* parent job (only populated on the sub-jobs */
+
+  int               ji_internal_id;
+  pthread_mutex_t  *ji_mutex;
+  bool              ji_being_recycled;
+  time_t            ji_last_reported_time;
+  time_t            ji_mod_time;       // the timestamp of when the state last changed
+  // This is used as a bitmap to ensure that a job is only counted once as a queued job for 
+  // the queue count and the server count
+  unsigned          ji_queue_counted;
+  bool              ji_being_deleted;
+  int               ji_commit_done;   /* req_commit has completed. If in routing queue job can now be routed */
+
+  /*
+   * fixed size internal data - maintained via "quick save"
+   * some of the items are copies of attributes, if so this
+   * internal version takes precendent
+   * 
+   * NOTE: IF YOU MAKE ANY CHANGES TO THIS STRUCT THEN YOU ARE INTRODUCING 
+   * AN INCOMPATIBILITY WITH .JB FILES FROM PREVIOUS VERSIONS OF TORQUE.
+   * YOU SHOULD INCREMENT THE VERSION OF THE STRUCT AND PROVIDE APPROPRIATE 
+   * SUPPORT IN joq_qs_upgrade() FOR UPGRADING PREVIOUS VERSIONS OF THIS 
+   * STRUCT TO THE CURRENT VERSION.  ALSO NOTE THAT ANY CHANGES TO CONSTANTS
+   * THAT DEFINE THE SIZE OF ANY ARRAYS IN THIS STRUCT ALSO INTRODUCE AN 
+   * INCOMPATIBILITY WITH .JB FILES FROM PREVIOUS VERSIONS AND REQUIRE A NEW
+   * STRUCT VERSION AND UPGRADE SUPPORT.
+   */
+
+  struct jobfix   ji_qs;
+
+  /*
+   * The following array holds the decode format of the attributes.
+   * Its presence is for rapid acces to the attributes.
+   */
+
+  pbs_attribute ji_wattr[JOB_ATR_LAST]; /* decoded attributes  */
+
+  job();
+  ~job();
+  void free_job_allocation();
+  void job_init_wattr();
+
+  void set_plugin_resource_usage_from_json(Json::Value &resources);
+  void set_plugin_resource_usage_from_json(const char *json_str);
+  void set_plugin_resource_usage(const char *name, const char *value);
+
+  void encode_plugin_resource_usage(tlist_head *phead) const;
+  void add_plugin_resource_usage(std::string &acct_data) const;
   };
+#endif
 
 typedef struct job job;
 
@@ -733,7 +867,7 @@ int  insert_job_after(all_jobs *,job *before,job *after);
 int  insert_job_after(all_jobs *, char *after_id, job *after);
 int  insert_job_first(all_jobs *,job *);
 int  get_jobs_index(all_jobs *, job *);
-int  remove_job(all_jobs *,job *);
+int  remove_job(all_jobs *, job *, bool force_lock=false);
 int  has_job(all_jobs *,job *);
 int  swap_jobs(all_jobs *,job *,job *);
 struct pbs_queue *get_jobs_queue(job **);
@@ -755,46 +889,13 @@ void  update_recycler_next_id();
 void  initialize_recycler();
 void  garbage_collect_recycling();
 void *remove_extra_recycle_jobs(void *);
+void *remove_completed_jobs(void *);
 
 #endif
 
 
 
 #ifdef PBS_MOM
-/*
-** Tasks are sessions belonging to a job, running on one of the
-** nodes assigned to the job.
-*/
-
-
-typedef struct taskfix
-  {
-  char     ti_parentjobid[PBS_MAXSVRJOBID+1];
-  tm_node_id ti_parentnode;
-  tm_task_id ti_parenttask;
-  tm_task_id ti_task; /* task's taskid */
-  int  ti_status; /* status of task */
-  pid_t  ti_sid;  /* session id */
-  int  ti_exitstat; /* exit status */
-  union
-    {
-    int ti_hold[16]; /* reserved space */
-    } ti_u;
-  } taskfix;
-
-typedef struct task
-  {
-  list_link        ti_jobtask; /* links to tasks for this job */
-  struct tcp_chan *ti_chan;  /* DIS file descriptor to task */
-  int              ti_flags; /* task internal flags */
-  tm_event_t       ti_register; /* event if task registers - never used*/
-  tlist_head       ti_obits; /* list of obit events */
-  tlist_head       ti_info; /* list of named info */
-
-  taskfix ti_qs;
-  } task;
-
-
 
 /*
 ** Events need to be linked to either a task or another event
@@ -802,12 +903,15 @@ typedef struct task
 ** we can forward the event to another MOM.
 */
 
-typedef struct fwdevent
+class fwdevent
   {
+  public:
   tm_node_id fe_node; /* where does notification go */
   tm_event_t fe_event; /* event number */
   tm_task_id fe_taskid; /* which task id */
-  } fwdevent;
+
+  fwdevent() : fe_node(0), fe_event(0), fe_taskid(0) {}
+  };
 
 /*
 ** A linked list of eventent structures is maintained for all events
@@ -831,28 +935,81 @@ typedef struct eventent
 ** These are tracked by obitent structures linked to the task.
 */
 
-typedef struct obitent
+class obitent
   {
+  public:
   fwdevent oe_info; /* who gets the event */
-  list_link oe_next; /* link to next one */
-  } obitent;
+
+  obitent() : oe_info() {}
+  };
 
 /*
 ** A task can have a list of named infomation which it makes
 ** available to other tasks in the job.
 */
 
-typedef struct infoent
+class infoent
   {
+  public:
   char  *ie_name; /* published name */
   void  *ie_info; /* the glop */
   size_t ie_len;  /* how much glop */
-  list_link ie_next; /* link to next one */
-  } infoent;
+
+  infoent() : ie_name(NULL), ie_info(NULL), ie_len(0) {}
+  ~infoent()
+    {
+    free(this->ie_name);
+    free(this->ie_info);
+    }
+  };
 
 
+/*
+** Tasks are sessions belonging to a job, running on one of the
+** nodes assigned to the job.
+*/
 
-#ifdef PBS_MOM
+
+typedef struct taskfix
+  {
+  char     ti_parentjobid[PBS_MAXSVRJOBID+1];
+  tm_node_id ti_parentnode;
+  tm_task_id ti_parenttask;
+  tm_task_id ti_task; /* task's taskid */
+  int  ti_status; /* status of task */
+  pid_t  ti_sid;  /* session id */
+  int  ti_exitstat; /* exit status */
+  union
+    {
+    int ti_hold[16]; /* reserved space */
+    } ti_u;
+  } taskfix;
+
+class task
+  {
+  public:
+  struct tcp_chan    *ti_chan;  /* DIS file descriptor to task */
+  int                 ti_flags; /* task internal flags */
+  int                 ti_chan_reused; /* do_tcp for tm_requests will reuse the chan and 
+                                      make a second call to tm_request where the same
+                                      chan is added to a task for the job. When the job
+                                      is deleted the same chan is in two tasks and the secon
+                                      task tries to free the same address. This lets us know
+                                      it has already been deleted.*/
+  tm_event_t          ti_register; /* event if task registers - never used*/
+  std::vector<obitent>  ti_obits; /* list of obit events */
+  std::vector<infoent>  ti_info; /* list of named info */
+
+  taskfix ti_qs;
+
+  task() : ti_chan(NULL), ti_flags(0), ti_chan_reused(0), ti_register(0), ti_obits(), ti_info()
+    {
+    memset(&this->ti_qs, 0, sizeof(this->ti_qs));
+    }
+
+  ~task();
+  };
+
 typedef struct job_file_delete_info
   {
   char           jobid[PBS_MAXSVRJOBID+1];
@@ -861,10 +1018,10 @@ typedef struct job_file_delete_info
   unsigned char  has_temp_dir;
   gid_t          gid;
   uid_t          uid;
-  } job_file_delete_info;
+#ifdef PENABLE_LINUX_CGROUPS
+  bool           cgroups_all_created;
 #endif
-
-
+  } job_file_delete_info;
 
 
 #define TI_FLAGS_INIT           1  /* task has called tm_init */
@@ -877,7 +1034,7 @@ typedef struct job_file_delete_info
 #define TI_STATE_EMBRYO  0
 #define TI_STATE_RUNNING 1    /* includes suspended jobs */
 #define TI_STATE_EXITED  2  /* ti_exitstat valid */
-#define TI_STATE_DEAD    3
+#define TI_STATE_DEAD    3 
 
 
 /*
@@ -901,7 +1058,10 @@ typedef struct job_file_delete_info
 #define IM_RADIX_ALL_OK   12
 #define IM_JOIN_JOB_RADIX 13
 #define IM_KILL_JOB_RADIX 14
-#define IM_MAX            15
+#define IM_FENCE          15
+#define IM_CONNECT        16
+#define IM_DISCONNECT     17
+#define IM_MAX            18
 
 #define IM_ERROR          99
 
@@ -924,12 +1084,17 @@ task *task_find(job *pjob, tm_task_id taskid);
 #define LOCUTION_SIZE     20
 
 
-typedef struct send_job_request
+class send_job_request
   {
-  char      *jobid;
-  int        move_type;
-  void      *data;
-  } send_job_request;
+  public:
+  std::string  jobid;
+  int          move_type;
+  void        *data;
+
+  send_job_request() : jobid(), move_type(MOVE_TYPE_Move), data(NULL)
+    {
+    }
+  };
 
 
 
@@ -938,22 +1103,43 @@ typedef struct send_job_request
 /*
  * server flags (in ji_svrflags)
  */
-#define JOB_SVFLG_HERE     0x01 /* SERVER: job created here */
-/* MOM: set for Mother Superior */
-#define JOB_SVFLG_HASWAIT  0x02 /* job has timed task entry for wait time */
-#define JOB_SVFLG_HASRUN   0x04 /* job has been run before (being rerun */
-#define JOB_SVFLG_CHECKPOINT_FILE    0x10 /* job has checkpoint file for restart */
-#define JOB_SVFLG_SCRIPT   0x20 /* job has a Script file */
-#define JOB_SVFLG_OVERLMT1 0x40 /* job over limit first time, MOM only */
-#define JOB_SVFLG_OVERLMT2 0x80 /* job over limit second time, MOM only */
-#define JOB_SVFLG_CHECKPOINT_MIGRATEABLE 0x100 /* job has migratable checkpoint */
-#define JOB_SVFLG_Suspend  0x200 /* job suspended (signal suspend) */
-#define JOB_SVFLG_StagedIn 0x400 /* job has files that have been staged in */
-#define JOB_SVFLG_JOB_ABORTED 0x800 /* Job has been aborted for some reason */
-#define JOB_SVFLG_HasNodes 0x1000 /* job has nodes allocated to it */
-#define JOB_SVFLG_RescAssn 0x2000 /* job resources accumulated in server/que */
-#define JOB_SVFLG_CHECKPOINT_COPIED 0x4000 /* job checkpoint file that has been copied */
-#define JOB_SVFLG_INTERMEDIATE_MOM  0x8000 /* This is for job_radix. I am an intermediate mom */
+
+// For Server:
+#ifndef PBS_MOM
+#define JOB_SVFLG_HERE                   0x01   // SERVER: job created here
+#define JOB_SVFLG_HASWAIT                0x02   // job has timed task entry for wait time
+#define JOB_SVFLG_HASRUN                 0x04   // job has been run before (being rerun
+#define JOB_SVFLG_CHECKPOINT_FILE        0x10   // job has checkpoint file for restart
+#define JOB_SVFLG_SCRIPT                 0x20   // job has a Script file
+//#define JOB_SVFLG_OVERLMT1             0x40   // MOM only 
+//#define JOB_SVFLG_OVERLMT2             0x80   // MOM only
+#define JOB_SVFLG_CHECKPOINT_MIGRATEABLE 0x100  // job has migratable checkpoint
+#define JOB_SVFLG_Suspend                0x200  // job suspended (signal suspend)
+#define JOB_SVFLG_StagedIn               0x400  // job has files that have been staged in
+//#define JOB_SVFLG_JOB_ABORTED          0x800  // MOM only
+#define JOB_SVFLG_HasNodes               0x1000 // job has nodes allocated to it
+#define JOB_SVFLG_RescAssn               0x2000 // job resources accumulated in server/que
+#define JOB_SVFLG_CHECKPOINT_COPIED      0x4000 // job checkpoint file that has been copied 
+#define JOB_ACCOUNTED_FOR                0x8000 // End of job accounting has happened
+
+#else
+// For MOM:
+#define JOB_SVFLG_HERE                   0x01   // set on mother superior
+//#define JOB_SVFLG_HASWAIT              0x02   // Not used on the mom
+//#define JOB_SVFLG_HASRUN               0x04   // Not used on the mom
+#define JOB_SVFLG_CHECKPOINT_FILE        0x10   // job has checkpoint file for restart
+#define JOB_SVFLG_SCRIPT                 0x20   // job has a Script file
+#define JOB_SVFLG_OVERLMT1               0x40   // job over limit first time, MOM only
+#define JOB_SVFLG_OVERLMT2               0x80   // job over limit second time, MOM only
+#define JOB_SVFLG_CHECKPOINT_MIGRATEABLE 0x100  // job has migratable checkpoint 
+#define JOB_SVFLG_Suspend                0x200  // job suspended (signal suspend)
+//#define JOB_SVFLG_StagedIn             0x400  // Not used on the mom
+#define JOB_SVFLG_JOB_ABORTED            0x800  // Job has been aborted for some reason 
+//#define JOB_SVFLG_HasNodes             0x1000 // Not used on the mom
+//#define JOB_SVFLG_RescAssn             0x2000 // Not used on the mom
+//#define JOB_SVFLG_CHECKPOINT_COPIED    0x4000 // Not used on the mom
+#define JOB_SVFLG_INTERMEDIATE_MOM       0x8000 // This is for job_radix. I am an intermediate mom
+#endif
 
 
 /*
@@ -964,6 +1150,8 @@ typedef struct send_job_request
 #define SAVEJOB_NEW   2
 
 #define MAIL_NONE  (int)'n'
+#define MAIL_NOJOBMAIL  (int)'p'
+#define MAIL_NONZERO (int)'f'
 #define MAIL_ABORT (int)'a'
 #define MAIL_BEGIN (int)'b'
 #define MAIL_DEL   (int)'d'
@@ -1033,6 +1221,8 @@ typedef struct send_job_request
 #define JOB_SUBSTATE_RUNNING 42 /* job running */
 #define JOB_SUBSTATE_SUSPEND 43 /* job suspended, CRAY only */
 
+#define JOB_SUBSTATE_PRECLEAN 48
+
 #define JOB_SUBSTATE_MOM_WAIT 49 /* waiting for kill confirm from sister moms */
 #define JOB_SUBSTATE_EXITING 50 /* Start of job exiting processing */
 #define JOB_SUBSTATE_EXIT_WAIT 51 /* Waiting for response from other moms
@@ -1053,10 +1243,11 @@ typedef struct send_job_request
 #define JOB_SUBSTATE_RERUN2 62 /* job is rerun, delete files stage */
 #define JOB_SUBSTATE_RERUN3 63 /* job is rerun, mom delete job */
 
+#define JOB_SUBSTATE_POST_CLEANUP  64 // job has completed cleanup and just needs to tell pbs_server
+
 #define JOB_SUBSTATE_RETURNSTD 70      /* job has checkpoint file, return
 stdout / stderr files to server spool
 dir so that job can be restarted */
-
 #define JOB_SUBSTATE_ARRAY_TEMP 75  /* job is an array template */
 
 /* decriminator for ji_un union type */
@@ -1093,6 +1284,7 @@ dir so that job can be restarted */
 #define JOB_EXEC_OVERLIMIT_MEM  -10  /* job exceeded a memory limit */
 #define JOB_EXEC_OVERLIMIT_WT   -11  /* job exceeded a walltime limit */
 #define JOB_EXEC_OVERLIMIT_CPUT -12  /* job exceeded a cpu time limit */
+#define JOB_EXEC_RETRY_CGROUP   -13  /* couldn't create the job's cgroups */
 
 extern void  depend_clrrdy(job *);
 extern int   depend_on_que(pbs_attribute *, void *, int);
@@ -1104,17 +1296,26 @@ extern char *get_egroup(job *);
 extern char *get_variable(job *, const char *);
 extern int   init_chkmom(job *);
 extern void  issue_track(job *);
+#ifdef PBS_MOM
+job         *mom_job_alloc();
+#else
 extern job  *job_alloc();
+#endif
 extern int   job_unlink_file(job *pjob, const char *name);
 #ifndef PBS_MOM
-job         *job_clone(job *,struct job_array *, int);
+job         *job_clone(job *,struct job_array *, int, bool);
 job         *svr_find_job(const char *jobid, int get_subjob);
 job         *svr_find_job_by_id(int internal_job_id);
 job         *find_job_by_array(all_jobs *aj, const char *job_id, int get_subjob, bool locked);
+bool         job_id_exists(const std::string &job_id_string, int *rcode);
+bool         internal_job_id_exists(int internal_id);
 #else
 extern job  *mom_find_job(const char *);
+int          send_back_std_and_staged_files(job *pjob, int exitstatus);
+int          post_stageout(job *pjob, int exitstatus);
+void         delete_staged_in_files(job *pjob, char *home_dir, char **bad_list);
 #endif
-extern job  *job_recov(char *);
+extern job  *job_recov(const char *);
 extern int   job_save(job *, int, int);
 extern int   modify_job_attr(job *, svrattrl *, int, int *);
 extern const char *prefix_std_file(job *, std::string& , int);
@@ -1123,7 +1324,7 @@ extern int   set_jobexid(job *, pbs_attribute *, char *);
 extern int   site_check_user_map(job *, char *, char *, int);
 int  svr_dequejob(job *, int);
 int initialize_ruserok_mutex();
-extern int   svr_enquejob(job *, int, char *, bool);
+extern int   svr_enquejob(job *, int, const char *, bool, bool being_recovered);
 void         svr_evaljobstate(job &, int &, int &, int);
 extern void  svr_mailowner(job *, int, int, const char *);
 extern void  svr_mailowner_with_message(job *, int, int, const char *, const char *);
@@ -1133,6 +1334,9 @@ extern int   svr_setjobstate(job *, int, int, int);
 int          split_job(job *);
 
 bool   have_reservation(job *, struct pbs_queue *);
+
+int lock_ji_mutex(job *pjob, const char *id, const char *msg, int logging);
+int unlock_ji_mutex(job *pjob, const char *id, const char *msg, int logging);
 #ifdef BATCH_REQUEST_H
 extern job  *chk_job_request(char *, struct batch_request *);
 extern int   net_move(job *, struct batch_request *);
@@ -1144,7 +1348,6 @@ extern struct batch_request *cpy_checkpoint(struct batch_request *, job *, enum 
 int issue_signal(job **, const char *, void(*)(struct batch_request *), void *, char *);
 
 #endif /* BATCH_REQUEST_H */
-
 
 #endif /* PBS_JOB_H */
 

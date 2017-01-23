@@ -123,7 +123,7 @@
 
 /* External functions called */
 int svr_movejob(job *, char *, int *, struct batch_request *);
-long count_proc(char *spec);
+long count_proc(const char *spec);
 
 /* Local Functions */
 
@@ -153,7 +153,7 @@ void add_dest(
     return;
     }
 
-  jobp->ji_rejectdest->push_back(jobp->ji_qs.ji_destin);
+  jobp->ji_rejectdest.push_back(jobp->ji_qs.ji_destin);
   }  /* END add_dest() */
 
 
@@ -173,8 +173,8 @@ bool is_bad_dest(
   {
   /* ji_rejectdest is set in add_dest if approved in ??? */
 
-  for (unsigned int i = 0; i < jobp->ji_rejectdest->size(); i++)
-    if (jobp->ji_rejectdest->at(i) == dest)
+  for (unsigned int i = 0; i < jobp->ji_rejectdest.size(); i++)
+    if (jobp->ji_rejectdest.at(i) == dest)
       return(true);
 
   return(false);
@@ -367,7 +367,9 @@ int job_route(
 
       /* job may be acceptable */
 
-      bad_state = !qp->qu_attr[QR_ATR_RouteHeld].at_val.at_long;
+      /* change for trq-2788, reroute even if -h */
+      if (qp->qu_qs.qu_type != QTYPE_RoutePush)
+        bad_state = !qp->qu_attr[QR_ATR_RouteHeld].at_val.at_long;
 
       break;
 
@@ -729,6 +731,11 @@ int initialize_procct(
         pbs_errno = PBSE_INTERNAL;
         return(ROUTE_PERM_FAILURE);
         }
+      
+      // We have to refresh our pointers after adding a resource entry because resources are in a vector
+      // now and it may have been re-allocated.
+      pprocsp = find_resc_entry(pattr, pprocs_def);
+      pnodesp = find_resc_entry(pattr, pnodes_def);
       }
 
     /* Finally the moment of truth. We have the nodes and procs resources. Add them

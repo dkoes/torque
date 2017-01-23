@@ -120,7 +120,6 @@
 
 /* External functions */
 
-extern int issue_to_svr(char *svr, struct batch_request *, void (*func)(struct work_task *));
 extern int que_to_local_svr(struct batch_request *preq);
 extern long calc_job_cost(job *);
 char *get_correct_jobname(const char *jobid);
@@ -128,7 +127,7 @@ char *get_correct_jobname(const char *jobid);
 
 /* Local Private Functions */
 
-void set_depend_hold(job *, pbs_attribute *);
+void set_depend_hold(job *, pbs_attribute *, job_array *);
 int register_sync(struct depend *,  char *child, char *host, long);
 int register_dep(pbs_attribute *, struct batch_request *, int, int *);
 int unregister_dep(pbs_attribute *, struct batch_request *);
@@ -138,16 +137,15 @@ struct depend *find_depend(int type, pbs_attribute *pattr);
 
 struct depend *make_depend(int type, pbs_attribute *pattr);
 
-struct depend_job *find_dependjob(struct depend *, char *name);
+depend_job *find_dependjob(struct depend *, const char *name);
 
-struct depend_job *make_dependjob(struct depend *, char *jobid, char *host);
-void   del_depend_job(struct depend *pdep, struct depend_job *pdj);
+depend_job *make_dependjob(struct depend *, const char *jobid);
+void   del_depend_job(struct depend *pdep, depend_job *pdj);
 int    build_depend(pbs_attribute *, const char *);
 void   clear_depend(struct depend *, int type, int exists);
-void   del_depend(struct depend *);
 int    release_cheapest(job *, struct depend *);
-int    send_depend_req(job *, struct depend_job *pparent, int, int, int, void (*postfunc)(batch_request *),bool bAsyncOk);
-depend_job *alloc_dependjob(const char *jobid, const char *host);
+int    send_depend_req(job *, depend_job *pparent, int, int, int, void (*postfunc)(batch_request *),bool bAsyncOk);
+depend_job *alloc_dependjob(const char *jobid);
 
 /* External Global Data Items */
 
@@ -314,12 +312,11 @@ int register_before_dep(
   int            type)
 
   {
-  int                rc = PBSE_NONE;
-  struct depend     *pdep = NULL;
-  pbs_attribute     *pattr = &pjob->ji_wattr[JOB_ATR_depend];
-  int                revtype;
-  struct depend_job *pdj = NULL;
-  int                made = FALSE;
+  int            rc = PBSE_NONE;
+  depend        *pdep = NULL;
+  pbs_attribute *pattr = &pjob->ji_wattr[JOB_ATR_depend];
+  int            revtype;
+  int            made = FALSE;
 
   /*
    * Check job owner for permission, use the real
@@ -350,14 +347,6 @@ int register_before_dep(
         
         rc = PBSE_BADDEPEND;
         }
-      else if ((pdj = find_dependjob(pdep, preq->rq_ind.rq_register.rq_child)))
-        {
-        /* has prior register, update it */
-        if (server_name[0] != '\0')
-          snprintf(pdj->dc_svr, sizeof(pdj->dc_svr), "%s", server_name);
-        else
-          snprintf(pdj->dc_svr, sizeof(pdj->dc_svr), "%s", preq->rq_ind.rq_register.rq_svr);
-        }
       }
     else if ((rc = register_dep(pattr, preq, type, &made)) == PBSE_NONE)
       {
@@ -365,7 +354,7 @@ int register_before_dep(
         {
         /* first time registered */
         if (--pdep->dp_numexp <= 0)
-          del_depend(pdep);
+          delete pdep;
         }
       }
     }
@@ -478,7 +467,7 @@ int release_before_dependency(
   int                rc = PBSE_NONE;
   pbs_attribute     *pattr = &pjob->ji_wattr[JOB_ATR_depend];
   struct depend     *pdep = NULL;
-  struct depend_job *pdj = NULL;
+  depend_job        *pdj = NULL;
   char               log_buf[LOCAL_LOG_BUF_SIZE];
   /*char               job_id[PBS_MAXSVRJOBID+1];*/
  
@@ -499,9 +488,9 @@ int release_before_dependency(
       if (pdep->dp_jobs.size() == 0)
         {
         /* no more dependencies of this type */
-        del_depend(pdep);
+        delete pdep;
         
-        set_depend_hold(pjob, pattr);
+        set_depend_hold(pjob, pattr, NULL);
         }
       
       return(rc);
@@ -537,7 +526,7 @@ int release_syncwith_dependency(
     {
     pdep->dp_released = 1;
     
-    set_depend_hold(pjob, pattr);
+    set_depend_hold(pjob, pattr, NULL);
     
     sprintf(tmpcoststr, "%ld", preq->rq_ind.rq_register.rq_cost);
 
@@ -594,8 +583,6 @@ int release_dependency(
 
 
 
-
-
 int ready_dependency(
 
   batch_request *preq,
@@ -605,7 +592,7 @@ int ready_dependency(
   int                rc = PBSE_NONE;
   pbs_attribute     *pattr = &pjob->ji_wattr[JOB_ATR_depend];
   struct depend     *pdep = NULL;
-  struct depend_job *pdj = NULL;
+  depend_job        *pdj = NULL;
 
   if ((pdep = find_depend(JOB_DEPEND_TYPE_SYNCCT, pattr)))
     {
@@ -616,7 +603,7 @@ int ready_dependency(
       {
       pdj = pdep->dp_jobs[i];
       
-      if (strcmp(pdj->dc_child, preq->rq_ind.rq_register.rq_child) == 0)
+      if (pdj->dc_child == preq->rq_ind.rq_register.rq_child)
         {
         pdj->dc_state = JOB_DEPEND_OP_READY;
         
@@ -636,6 +623,15 @@ int ready_dependency(
 
 
 
+/*
+ * delete_dependency_job()
+ *
+ * Deletes the dependent job. We are here because the dependency can never be satisfied.
+ * @param preq - the batch request specifying the request
+ * @param pjob_ptr - a pointer to a pointer to the job
+ * @return PBSE_NONE on success or PBSE_IVALREQ if a job is detected to be dependent on
+ * itself.
+ */
 
 int delete_dependency_job(
  
@@ -647,13 +643,16 @@ int delete_dependency_job(
   int  rc = PBSE_NONE;
   char log_buf[LOCAL_LOG_BUF_SIZE];
   
+  // Do not take action for a job depending on itself.
   if (!strcmp(preq->rq_ind.rq_register.rq_parent,
         preq->rq_ind.rq_register.rq_child))
     {
     rc = PBSE_IVALREQ; /* prevent an infinite loop */
     }
-  // only abort if the job isn't already exiting
-  else if (pjob->ji_qs.ji_state < JOB_STATE_EXITING)
+  // Only abort if the job isn't already exiting, and never abort
+  // running jobs for any job dependency reasons.
+  else if ((pjob->ji_qs.ji_state < JOB_STATE_EXITING) &&
+           (pjob->ji_qs.ji_state != JOB_STATE_RUNNING))
     {
     sprintf(log_buf, msg_registerdel, preq->rq_ind.rq_register.rq_child);
     log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, log_buf);
@@ -667,6 +666,15 @@ int delete_dependency_job(
 
 
 
+/*
+ * unregister_dependency()
+ *
+ * Remove a dependency from a job
+ * @param preq - the request in question
+ * @param pjob - the job who needs to have a dependency removed.
+ * @param type - the dependency type
+ * @return PBSE_NONE on success or a failure code
+ */
 
 int unregister_dependency(
  
@@ -694,7 +702,7 @@ int unregister_dependency(
     unregister_dep(pattr, preq);
     }
   
-  set_depend_hold(pjob, pattr);
+  set_depend_hold(pjob, pattr, NULL);
 
   return(rc);
   } /* END unregister_dependency() */
@@ -759,52 +767,60 @@ int req_register(
     }
  
   /* Handle the dependency */
-  switch (preq->rq_ind.rq_register.rq_op)
+  try
     {
-    case JOB_DEPEND_OP_REGISTER:
+    switch (preq->rq_ind.rq_register.rq_op)
+      {
+      case JOB_DEPEND_OP_REGISTER:
 
-      rc = register_dependency(preq, pjob, type);
+        rc = register_dependency(preq, pjob, type);
 
-      break;
-      
-    case JOB_DEPEND_OP_RELEASE:
+        break;
+        
+      case JOB_DEPEND_OP_RELEASE:
 
-      rc = release_dependency(preq, pjob, type);
+        rc = release_dependency(preq, pjob, type);
 
-      break;
+        break;
 
-    case JOB_DEPEND_OP_READY:
+      case JOB_DEPEND_OP_READY:
 
-      rc = ready_dependency(preq, pjob);
- 
-      break;
- 
-    case JOB_DEPEND_OP_DELETE:
- 
-      rc = delete_dependency_job(preq, &pjob);
- 
-      break;
- 
-    case JOB_DEPEND_OP_UNREG:
+        rc = ready_dependency(preq, pjob);
+   
+        break;
+   
+      case JOB_DEPEND_OP_DELETE:
+   
+        rc = delete_dependency_job(preq, &pjob);
+   
+        break;
+   
+      case JOB_DEPEND_OP_UNREG:
 
-      rc =  unregister_dependency(preq, pjob, type);
+        rc =  unregister_dependency(preq, pjob, type);
 
-      break;
+        break;
 
-    default:
+      default:
 
-      sprintf(log_buf, msg_illregister, preq->rq_ind.rq_register.rq_parent);
+        sprintf(log_buf, msg_illregister, preq->rq_ind.rq_register.rq_parent);
 
-      log_event(
-        PBSEVENT_DEBUG | PBSEVENT_SYSTEM | PBSEVENT_ERROR,
-        PBS_EVENTCLASS_REQUEST,
-        preq->rq_host,
-        log_buf);
+        log_event(
+          PBSEVENT_DEBUG | PBSEVENT_SYSTEM | PBSEVENT_ERROR,
+          PBS_EVENTCLASS_REQUEST,
+          preq->rq_host,
+          log_buf);
 
-      rc = PBSE_IVALREQ;
+        rc = PBSE_IVALREQ;
 
-      break;
-    }  /* END switch (preq->rq_ind.rq_register.rq_op) */
+        break;
+      }  /* END switch (preq->rq_ind.rq_register.rq_op) */
+    }
+  catch (int pbs_errcode)
+    {
+    if (pbs_errcode == PBSE_JOBNOTFOUND)
+      pjob = NULL;
+    }
 
   if (rc)
     {
@@ -979,31 +995,34 @@ int register_array_depend(
   int                   num_jobs) /* I */
 
   {
-  struct array_depend     *pdep;
+  struct array_depend     *pdep = NULL;
 
-  struct array_depend_job *pdj = NULL;
+  array_depend_job        *pdj = NULL;
 
   /* check for existing dependencies of that type */
-  pdep = (struct array_depend *)GET_NEXT(pa->ai_qs.deps);
-  while (pdep != NULL)
-    {
-    if (type == pdep->dp_type)
-     break; 
+  std::list<array_depend *>::iterator it = pa->ai_qs.deps.begin();
 
-    pdep = (struct array_depend *)GET_NEXT(pdep->dp_link);
+  while (it != pa->ai_qs.deps.end())
+    {
+    if (type == (*it)->dp_type)
+      {
+      pdep = *it;
+      break; 
+      }
+
+    it++;
     }
 
   /* make dependency if none exists */
   if (pdep == NULL)
     {
-    pdep = (struct array_depend *)calloc(1, sizeof(struct array_depend));
+    pdep = new array_depend();
 
     if (pdep != NULL)
       {
-      CLEAR_HEAD(pdep->dp_link);
       pdep->dp_type = type;
 
-      append_link(&pa->ai_qs.deps, &pdep->dp_link, pdep);
+      pa->ai_qs.deps.push_back(pdep);
       }
     else
       return(PBSE_SYSTEM);
@@ -1014,12 +1033,12 @@ int register_array_depend(
   unsigned int dp_jobs_size = pdep->dp_jobs.size();
   for (unsigned int i = 0; i < dp_jobs_size; i++)
     {
-    pdj = pdep->dp_jobs[i];
-
-    if (!strcmp(preq->rq_ind.rq_register.rq_child, pdj->dc_child))
+    if (pdep->dp_jobs[i]->dc_child == preq->rq_ind.rq_register.rq_child)
+      {
+      pdj = pdep->dp_jobs[i];
       break;
+      }
 
-    pdj = NULL;
     }
 
   /* assume success if the job is there */
@@ -1027,15 +1046,11 @@ int register_array_depend(
     return(PBSE_NONE);
 
   /* try to create the job */
-  pdj = (struct array_depend_job *)calloc(1, sizeof(struct array_depend_job));
+  pdj = new array_depend_job();
 
   if (pdj != NULL)
     {
-    snprintf(pdj->dc_child,sizeof(pdj->dc_child),"%s",preq->rq_ind.rq_register.rq_child);
-    if (server_name[0] != '\0')
-      snprintf(pdj->dc_svr, sizeof(pdj->dc_svr), "%s", server_name);
-    else
-      snprintf(pdj->dc_svr, sizeof(pdj->dc_svr), "%s", preq->rq_ind.rq_register.rq_svr);
+    pdj->dc_child = preq->rq_ind.rq_register.rq_child;
 
     if (num_jobs == -1)
       {
@@ -1059,6 +1074,7 @@ int register_array_depend(
 
   return(PBSE_NONE);
   } /* END register_array_depend */
+
 
 
 bool remove_array_dependency_job_from_job(
@@ -1086,13 +1102,14 @@ bool remove_array_dependency_job_from_job(
       if (job_pdep->dp_jobs.size() == 0)
         {
         /* no more dependencies of this type */
-        del_depend(job_pdep);
+        delete job_pdep;
         }
       }
     }
 
   return(removed);
   } /* remove_array_dependency_job_from_job() */
+
 
 
 /*
@@ -1118,13 +1135,14 @@ bool set_array_depend_holds(
   bool                     dependency_satisfied = false;
 
   job                     *pjob;
-  struct array_depend_job *pdj;
-
-  struct array_depend     *pdep = (struct array_depend *)GET_NEXT(pa->ai_qs.deps);
+  array_depend_job        *pdj;
 
   /* loop through dependencies to update holds */
-  while (pdep != NULL)
+  for (std::list<array_depend *>::iterator it = pa->ai_qs.deps.begin();
+       it != pa->ai_qs.deps.end(); it++)
     {
+    array_depend *pdep = *it;
+
     compareNumber = -1;
 
     switch (pdep->dp_type)
@@ -1184,7 +1202,7 @@ bool set_array_depend_holds(
     for (unsigned int i = 0; i < dp_jobs_size; i++)
       {
       pdj = pdep->dp_jobs[i];
-      pjob = svr_find_job(pdj->dc_child, TRUE);
+      pjob = svr_find_job(pdj->dc_child.c_str(), TRUE);
 
       if (pjob != NULL)
         {
@@ -1222,13 +1240,18 @@ bool set_array_depend_holds(
           /* release the array's hold - set_depend_hold
            * will clear holds if there are no other dependencies
            * logged in set_depend_hold */
-          set_depend_hold(pjob, &pjob->ji_wattr[JOB_ATR_depend]);
+          try 
+            {
+            set_depend_hold(pjob, &pjob->ji_wattr[JOB_ATR_depend], pa);
+            }
+          catch (int err)
+            {
+            job_mutex.set_unlock_on_exit(false);
+            }
           }
         }
 
       }
-
-    pdep = (struct array_depend *)GET_NEXT(pdep->dp_link);
     }
 
   return(dependency_satisfied);
@@ -1251,7 +1274,7 @@ void post_doq(
   pbs_attribute        *pattr;
 
   struct depend        *pdp;
-  struct depend_job    *pdjb;
+  depend_job           *pdjb;
   char                 *jobid;
 
   if (preq == NULL)
@@ -1300,7 +1323,14 @@ void post_doq(
           pjob->ji_modified = 1;
           }
 
-        set_depend_hold(pjob, pattr);
+        try
+          {
+          set_depend_hold(pjob, pattr, NULL);
+          }
+        catch (int err)
+          {
+          job_mutex.set_unlock_on_exit(false);
+          }
         }
       }
     }
@@ -1327,11 +1357,11 @@ int alter_unreg(
   pbs_attribute *new_attr)  /* job dependency pbs_attribute after alter */
 
   {
-  struct depend     *poldd;
-  struct depend     *pnewd;
-  struct depend_job *oldjd;
+  struct depend *poldd;
+  struct depend *pnewd;
+  depend_job    *oldjd;
 
-  int                type;
+  int            type;
 
   for (poldd = (struct depend *)GET_NEXT(old->at_val.at_list);
        poldd;
@@ -1348,7 +1378,7 @@ int alter_unreg(
         oldjd = poldd->dp_jobs[i];
 
         if ((pnewd == 0) || 
-            (find_dependjob(pnewd, oldjd->dc_child) == 0))
+            (find_dependjob(pnewd, oldjd->dc_child.c_str()) == 0))
           {
           int rc = send_depend_req(pjob, oldjd, type, JOB_DEPEND_OP_UNREG, SYNC_SCHED_HINT_NULL, free_br,false);
 
@@ -1423,7 +1453,7 @@ int depend_on_que(
     }
 
   /* First set a System hold if required */
-  set_depend_hold(pjob, pattr);
+  set_depend_hold(pjob, pattr, NULL);
 
   /* Check if there are dependencies that require registering */
 
@@ -1461,7 +1491,7 @@ int depend_on_que(
 
       for (unsigned int i = 0; i < pdep->dp_jobs.size(); i++)
         {
-        depend_job *dj = alloc_dependjob(pdep->dp_jobs[i]->dc_child, pdep->dp_jobs[i]->dc_svr);
+        depend_job *dj = alloc_dependjob(pdep->dp_jobs[i]->dc_child.c_str());
         pparent.push_back(dj);
         }
 
@@ -1474,7 +1504,7 @@ int depend_on_que(
 
       // free the allocated array
       for (unsigned int i = 0; i < pparent.size(); i++)
-        free(pparent[i]);
+        delete pparent[i];
 
       if (rc != PBSE_NONE)
         return(rc);
@@ -1502,7 +1532,7 @@ void post_doe(
 
   struct depend        *pdep;
 
-  struct depend_job    *pdj;
+  depend_job           *pdj;
   job                  *pjob;
   char                 *jobid;
  
@@ -1529,7 +1559,7 @@ void post_doe(
         {
         /* no more dependencies of this type */
 
-        del_depend(pdep);
+        delete pdep;
         }
       }
     }
@@ -1555,7 +1585,7 @@ int depend_on_exec(
 
   {
   struct depend     *pdep;
-  struct depend_job *pdj;
+  depend_job        *pdj;
   char               jobid[PBS_MAXSVRJOBID+1];
 
   strcpy(jobid, pjob->ji_qs.ji_jobid);
@@ -1653,7 +1683,7 @@ int depend_on_term(
 
   struct depend     *pdep;
 
-  struct depend_job *pparent;
+  depend_job        *pparent;
   int                rc;
   int                shouldkill = 0;
   int                type;
@@ -1785,10 +1815,10 @@ int release_cheapest(
 
   {
   long               lowestcost = 0;
-  struct depend_job *cheapest = NULL;
+  depend_job        *cheapest = NULL;
   int                hint = SYNC_SCHED_HINT_OTHER;
   int                nreleased = 0;
-  struct depend_job *pdj;
+  depend_job        *pdj;
   int                rc = PBSE_NONE;
 
 
@@ -1838,12 +1868,17 @@ int release_cheapest(
  * set_depend_hold - set a hold on the job required by the type of dependency
  *
  * NOTE:  determine where dependency hold is cleared and comment
+ *
+ * @param pjob - the job whose dependency hold we're checking out
+ * @param pattr - the job's dependency attribute
+ * @param pa - optional, if non NULL then array's lock is already held and shouldn't be re-locked
  */
 
 void set_depend_hold(
 
   job           *pjob,
-  pbs_attribute *pattr)
+  pbs_attribute *pattr, 
+  job_array     *pa)
 
   {
   int                loop = 1;
@@ -1851,10 +1886,12 @@ void set_depend_hold(
   int                newsubst;
 
   struct depend     *pdp = NULL;
-  struct depend_job *djob = NULL;
+  depend_job        *djob = NULL;
 
   struct job        *djp = NULL;
   int                substate = -1;
+
+  std::vector<std::string>  array_names;
 
   if (pattr->at_flags & ATR_VFLAG_SET)
     pdp = (struct depend *)GET_NEXT(pattr->at_val.at_list);
@@ -1893,28 +1930,12 @@ void set_depend_hold(
           {
           djob = pdp->dp_jobs[0];
 
-          int jobids_match = 0;
-          long displayServerName = 1;
-          char *svrName = NULL;
-
-          if ((!get_svr_attr_l(SRV_ATR_display_job_server_suffix, &displayServerName)) &&
-              (!displayServerName) &&
-              (pjob->ji_wattr[JOB_ATR_at_server].at_flags&ATR_VFLAG_SET) &&
-              (svrName = pjob->ji_wattr[JOB_ATR_at_server].at_val.at_str) != NULL &&
-              (!strcmp(svrName,djob->dc_svr)) &&
-              (!strncmp(djob->dc_child,pjob->ji_qs.ji_jobid,strlen(pjob->ji_qs.ji_jobid))))
-            {
-            jobids_match = 1;
-            }
+          bool jobids_match = job_ids_match(pjob->ji_qs.ji_jobid, djob->dc_child.c_str());
+          
           /* if dc_child is the same job id as pjob don't
              lock the job. It is already locked */
           if (!jobids_match)
-            {
-            if (strcmp(djob->dc_child, pjob->ji_qs.ji_jobid))
-              djp = svr_find_job(djob->dc_child, TRUE);
-            else
-              jobids_match = 1;
-            }
+            djp = svr_find_job(djob->dc_child.c_str(), TRUE);
 
           if (!djp ||
               ((pdp->dp_type == JOB_DEPEND_TYPE_AFTERSTART) &&
@@ -1947,6 +1968,28 @@ void set_depend_hold(
           substate = JOB_SUBSTATE_DEPNHOLD;
 
         break;
+
+      default:
+
+        if (pdp->dp_type >= JOB_DEPEND_TYPE_AFTERSTARTARRAY)
+          {
+          // make sure the dependency still present
+          if (pdp->dp_jobs.size() > 0)
+            {
+            array_names.push_back(pdp->dp_jobs[0]->dc_child);
+            }
+          else
+            {
+            if (LOGLEVEL >= 2)
+              {
+              log_event(
+                PBSEVENT_JOB,
+                PBS_EVENTCLASS_JOB,
+                pjob->ji_qs.ji_jobid,
+                "Array dependency already satisfied. Skipping array dependency handling for job.");
+              }
+            }
+          }
       }  /* END switch (pdp->dp_type) */
 
     pdp = (struct depend *)GET_NEXT(pdp->dp_link);
@@ -1975,6 +2018,42 @@ void set_depend_hold(
       svr_evaljobstate(*pjob, newstate, newsubst, 0);
       svr_setjobstate(pjob, newstate, newsubst, FALSE);
       }
+
+    // If we have array dependencies, we need to update them
+    if (array_names.size() != 0)
+      {
+      std::string jobid(pjob->ji_qs.ji_jobid);
+      unlock_ji_mutex(pjob, __func__, "2", LOGLEVEL);
+
+      for (size_t i = 0; i < array_names.size(); i++)
+        {
+        job_array *to_update;
+
+        if ((pa != NULL) &&
+            ((array_names[i] == pa->ai_qs.parent_id) ||
+             ((!strncmp(array_names[i].c_str(), pa->ai_qs.parent_id, array_names[i].size())) &&
+              (pa->ai_qs.parent_id[array_names[i].size()] == '.'))))
+          {
+          continue;
+          }
+          
+        to_update = get_array(array_names[i].c_str());
+
+        if (to_update != NULL)
+          {
+          set_array_depend_holds(to_update);
+
+          unlock_ai_mutex(to_update, __func__, "2", LOGLEVEL);
+          }
+        }
+
+      pjob = svr_find_job(jobid.c_str(), TRUE);
+
+      if (pjob == NULL)
+        {
+        throw (int)PBSE_JOBNOTFOUND;
+        }
+      }
     }
   else
     {
@@ -1997,7 +2076,6 @@ void set_depend_hold(
 
   return;
   }  /* END set_depend_hold() */
-
 
 
 
@@ -2075,11 +2153,10 @@ struct depend *make_depend(
   {
   struct depend *pdep = NULL;
 
-  pdep = (struct depend *)calloc(1, sizeof(struct depend));
+  pdep = new depend(type);
 
   if (pdep != NULL)
     {
-    clear_depend(pdep, type, 0);
     append_link(&pattr->at_val.at_list, &pdep->dp_link, pdep);
     pattr->at_flags |= ATR_VFLAG_SET;
     }
@@ -2103,23 +2180,18 @@ int register_sync(
   long           cost)
 
   {
-  struct depend_job *pdj;
+  depend_job *pdj;
 
   if ((pdj = find_dependjob(pdep, child)))
     {
     /* existing regist., just update the location of the child */
-
-    if (server_name[0] != '\0')
-      strncpy(pdj->dc_svr, server_name, sizeof(pdj->dc_svr) - 1);
-    else
-      strncpy(pdj->dc_svr, host, sizeof(pdj->dc_svr) - 1);
 
     return(PBSE_NONE);
     }
 
   /* a new registration, create depend_job entry */
 
-  pdj = make_dependjob(pdep, child, host);
+  pdj = make_dependjob(pdep, child);
 
   if (pdj == NULL)
     {
@@ -2158,7 +2230,7 @@ int register_dep(
 
   {
   struct depend     *pdep;
-  struct depend_job *pdj;
+  depend_job        *pdj;
 
   /* change into the mirror image type */
 
@@ -2174,20 +2246,12 @@ int register_dep(
 
   if ((pdj = find_dependjob(pdep, preq->rq_ind.rq_register.rq_child)))
     {
-    if (server_name[0] != '\0')
-      strcpy(pdj->dc_svr, server_name);
-    else
-      strcpy(pdj->dc_svr, preq->rq_ind.rq_register.rq_svr);
-
     *made = 0;
 
     return(PBSE_NONE);
     }
 
-  if (make_dependjob(
-               pdep,
-               preq->rq_ind.rq_register.rq_child,
-               preq->rq_ind.rq_register.rq_svr) == NULL)
+  if (make_dependjob(pdep, preq->rq_ind.rq_register.rq_child) == NULL)
     {
     return(PBSE_SYSTEM);
     }
@@ -2218,7 +2282,7 @@ int unregister_dep(
   int                type;
 
   struct depend     *pdp;
-  struct depend_job *pdjb;
+  depend_job        *pdjb;
 
   /* get mirror image of dependency type */
 
@@ -2253,7 +2317,7 @@ int unregister_sync(
 
   struct depend   *pdp;
 
-  struct depend_job *pdjb;
+  depend_job *pdjb;
 
   if (((pdp = find_depend(JOB_DEPEND_TYPE_SYNCCT, pattr)) == 0) ||
       ((pdjb = find_dependjob(pdp, preq->rq_ind.rq_register.rq_child)) == 0))
@@ -2285,25 +2349,25 @@ int unregister_sync(
  * find_dependjob - find a child dependent job with a certain job id
  */
 
-struct depend_job *find_dependjob(
+depend_job *find_dependjob(
 
   struct depend *pdep,
-  char          *name)
+  const char    *name)
 
   {
-  struct depend_job *pdj;
-  long               display_server_suffix = TRUE;
+  depend_job *pdj;
+  bool        display_server_suffix = true;
 
-  get_svr_attr_l(SRV_ATR_display_job_server_suffix, &display_server_suffix);
+  get_svr_attr_b(SRV_ATR_display_job_server_suffix, &display_server_suffix);
 
   unsigned int dp_jobs_size = pdep->dp_jobs.size();
   for (unsigned int i = 0; i < dp_jobs_size; i++)
     {
     pdj = pdep->dp_jobs[i];
     
-    if ((!strcmp(name, pdj->dc_child)) ||
+    if ((pdj->dc_child == name) ||
         ((display_server_suffix == FALSE) &&
-         (!strncmp(name, pdj->dc_child, strlen(name))) &&
+         (!strncmp(name, pdj->dc_child.c_str(), strlen(name))) &&
          (strchr(name, '.') == NULL)))
       return(pdj);
     }
@@ -2314,19 +2378,13 @@ struct depend_job *find_dependjob(
 
 depend_job *alloc_dependjob(
 
-  const char *jobid,
-  const char *host)
+  const char *jobid)
 
   {
-  depend_job *pdj = (depend_job *)calloc(1, sizeof(depend_job));
+  depend_job *pdj = new depend_job();
 
-  snprintf(pdj->dc_child, sizeof(pdj->dc_child), "%s", jobid);
+  pdj->dc_child = jobid;
   
-  if (server_name[0] != '\0')
-    strcpy(pdj->dc_svr, server_name);
-  else
-    snprintf(pdj->dc_svr, sizeof(pdj->dc_svr), "%s", host);
-
   return(pdj);
   } // END alloc_dependjob() 
 
@@ -2336,14 +2394,13 @@ depend_job *alloc_dependjob(
  * make_dependjob - add a depend_job structue
  */
 
-struct depend_job *make_dependjob(
+depend_job *make_dependjob(
 
   struct depend *pdep,
-  char          *jobid,
-  char          *host)
+  const char    *jobid)
 
   {
-  depend_job *pdj = alloc_dependjob(jobid, host);
+  depend_job *pdj = alloc_dependjob(jobid);
 
   if (pdj != NULL)
     pdep->dp_jobs.push_back(pdj);
@@ -2361,13 +2418,13 @@ struct depend_job *make_dependjob(
 
 int send_depend_req(
 
-  job                *pjob,
-  struct depend_job  *pparent,
-  int                 type,
-  int                 op,
-  int                 schedhint,
-  void               (*postfunc)(batch_request *),
-  bool                bAsyncOk)
+  job         *pjob,
+  depend_job  *pparent,
+  int          type,
+  int          op,
+  int          schedhint,
+  void       (*postfunc)(batch_request *),
+  bool         bAsyncOk)
 
   {
   int                   rc = 0;
@@ -2377,9 +2434,6 @@ int send_depend_req(
 
   struct batch_request *preq;
   char                  log_buf[LOCAL_LOG_BUF_SIZE];
-  pbs_net_t             svraddr1;
-  pbs_net_t             svraddr2;
-  int                   my_err;
 
   preq = alloc_br(PBS_BATCH_RegistDep);
 
@@ -2406,8 +2460,10 @@ int send_depend_req(
 
   preq->rq_ind.rq_register.rq_owner[i] = '\0';
 
-  strcpy(preq->rq_ind.rq_register.rq_parent, pparent->dc_child);
-  strcpy(preq->rq_ind.rq_register.rq_child, pjob->ji_qs.ji_jobid);
+  snprintf(preq->rq_ind.rq_register.rq_parent,
+    sizeof(preq->rq_ind.rq_register.rq_parent), "%s", pparent->dc_child.c_str());
+  snprintf(preq->rq_ind.rq_register.rq_child, sizeof(preq->rq_ind.rq_register.rq_child),
+    "%s", pjob->ji_qs.ji_jobid);
 
   /* kludge for server:port follows */
 
@@ -2420,7 +2476,7 @@ int send_depend_req(
   preq->rq_ind.rq_register.rq_dependtype = type;
 
   preq->rq_ind.rq_register.rq_op = op;
-  strcpy(preq->rq_host, pparent->dc_svr);  /* for issue_to_svr() */
+  strcpy(preq->rq_host, server_name);  /* for issue_to_svr() */
 
   /* if registering sync, include job cost for scheduling */
 
@@ -2448,29 +2504,26 @@ int send_depend_req(
   get_batch_request_id(preq);
   snprintf(br_id, sizeof(br_id), "%s", preq->rq_id);
 
-  svraddr1 = get_hostaddr(&my_err, server_name);
-  svraddr2 = get_hostaddr(&my_err, pparent->dc_svr);
-
-  if((svraddr1 == svraddr2)&&(bAsyncOk))
+  if (bAsyncOk)
     {
-    snprintf(preq->rq_host,sizeof(preq->rq_host),"%s",pparent->dc_svr);
+    snprintf(preq->rq_host, sizeof(preq->rq_host), "%s", server_name);
     rc = que_to_local_svr(preq);
+    preq = NULL;
     }
   else
     {
-    rc = issue_to_svr(pparent->dc_svr, preq, NULL);
+    rc = issue_to_svr(server_name, &preq, NULL);
     }
 
   if (rc != PBSE_NONE)
     {
-    /* local requests have already been processed and freed. Do not attempt to
-     * free or reference again. */
-    if (svraddr1 != svraddr2)
+    /* requests are conditionally freed in issue_to_svr() */
+    if (preq != NULL)
       {
       free_br(preq);
       }
 
-    sprintf(log_buf, "Unable to perform dependency with job %s\n", pparent->dc_child);
+    sprintf(log_buf, "Unable to perform dependency with job %s\n", pparent->dc_child.c_str());
     log_err(rc, __func__, log_buf);
 
     if ((preq = get_remove_batch_request(br_id)) != NULL)
@@ -2485,7 +2538,7 @@ int send_depend_req(
     }
   /* local requests have already been processed and freed. Do not attempt to
    * free or reference again. */
-  else if (svraddr1 != svraddr2)
+  else if (preq != NULL)
     postfunc(preq);
 
   if ((pjob = svr_find_job(job_id, TRUE)) == NULL)
@@ -2665,8 +2718,8 @@ static void cpy_jobsvr(
 
 void cat_jobsvr(
 
-  char **Dest,
-  char *Src)
+  char       **Dest,
+  const char  *Src)
 
   {
   char *d;
@@ -2734,10 +2787,10 @@ int dup_depend(
   struct depend *pd)
 
   {
-  struct depend     *pnwd;
-  struct depend_job *poldj;
-  struct depend_job *pnwdj;
-  int                type;
+  depend     *pnwd;
+  depend_job *poldj;
+  depend_job *pnwdj;
+  int         type;
 
   type = pd->dp_type;
 
@@ -2756,7 +2809,7 @@ int dup_depend(
     {
     poldj = pd->dp_jobs[i];
 
-    if ((pnwdj = make_dependjob(pnwd, poldj->dc_child, poldj->dc_svr)) == 0)
+    if ((pnwdj = make_dependjob(pnwd, poldj->dc_child.c_str())) == 0)
       {
       return(-1);
       }
@@ -2796,10 +2849,10 @@ int encode_depend(
   char                cvtbuf[22];
   int                 numdep = 0;
 
-  struct depend      *nxdp;
+  depend             *nxdp;
   struct svrattrl    *pal;
-  struct depend      *pdp;
-  struct depend_job  *pdjb = NULL;
+  depend             *pdp;
+  depend_job         *pdjb = NULL;
   struct dependnames *pn;
 
   char               *BPtr = 0;
@@ -2870,14 +2923,7 @@ int encode_depend(
         pdjb = nxdp->dp_jobs[i];
 
         fast_strcat(&BPtr,":");
-        cat_jobsvr(&BPtr,pdjb->dc_child);
-
-        if (*pdjb->dc_svr != '\0')
-          {
-          fast_strcat(&BPtr,"@");
-
-          cat_jobsvr(&BPtr,pdjb->dc_svr);
-          }
+        cat_jobsvr(&BPtr,pdjb->dc_child.c_str());
         } 
       }	
     
@@ -2943,7 +2989,7 @@ int set_depend(
         pdold = find_depend(pdnew->dp_type, attr);
 
         if (pdold != NULL)
-          del_depend(pdold);
+          delete pdold;
 
         if ((rc = dup_depend(attr, pdnew)) != 0)
           {
@@ -3003,27 +3049,17 @@ void free_depend(
   pbs_attribute *attr)
 
   {
-  struct depend     *pdp;
-  struct depend_job *pdjb;
+  depend     *pdp;
 
   while ((pdp = (struct depend *)GET_NEXT(attr->at_val.at_list)))
     {
-    unsigned int dp_jobs_size = pdp->dp_jobs.size();
-    for (unsigned int i = 0; i < dp_jobs_size; i++)
-      {
-      pdjb = pdp->dp_jobs[i];
-      free(pdjb);
-      }
-
-    delete_link(&pdp->dp_link);
-
-    free(pdp);
+    delete pdp;
     }
 
   attr->at_flags &= ~ATR_VFLAG_SET;
 
   return;
-  }  /* END comp_depend() */
+  }  /* END free_depend() */
 
 
 
@@ -3048,7 +3084,7 @@ int build_depend(
 
   struct depend      *pd;
 
-  struct depend_job  *pdjb;
+  depend_job         *pdjb;
 
   struct dependnames *pname;
   char               *pwhere;
@@ -3147,20 +3183,6 @@ int build_depend(
 
       break;
 
-    default:
-
-      if (type >= JOB_DEPEND_TYPE_AFTERSTARTARRAY)
-        {
-        for (i = 0; i < JOB_DEPEND_TYPE_AFTERSTARTARRAY; i++)
-          {
-          /* do not mix array dependencies with other deps */
-          if (have[i])
-            {
-            free(work_val);
-            return(PBSE_BADATVAL);
-            }
-          }
-        }
     }
 
   if ((pd = have[type]) == NULL)
@@ -3217,53 +3239,19 @@ int build_depend(
     else   /* all other dependency types */
       {
       /* a set of job_id[\:port][@server[\:port]] */
-      pdjb = (struct depend_job *)calloc(1, sizeof(*pdjb));
+      pdjb = new depend_job();
 
       if (pdjb)
         {
         pdjb->dc_state = 0;
         pdjb->dc_cost  = 0;
-        pdjb->dc_svr[0] = '\0';
-        pwhere = pdjb->dc_child;
+        pdjb->dc_child = valwd;
 
-        while (*valwd)
+        std::size_t pos = pdjb->dc_child.find("@");
+
+        if (pos != std::string::npos)
           {
-          if (*valwd == '@')   /* switch to @server */
-            {
-            *pwhere = '\0';
-            pwhere = pdjb->dc_svr;
-            }
-          else if ((*valwd == '\\') && (*(valwd + 1) == ':'))
-            {
-            *pwhere++ = *++valwd;  /* skip over '\' */
-            }
-          else
-            {
-            *pwhere++ = *valwd; /* copy jobid */
-            }
-
-          ++valwd;
-          }
-
-        *pwhere = '\0';
-
-        if (pdjb->dc_svr[0] == '\0')
-          {
-          pwhere = strchr(pdjb->dc_child, (int)'.');
-
-          if (pwhere)
-            {
-            if (server_name[0] != '\0')
-              snprintf(pdjb->dc_svr, sizeof(pdjb->dc_svr), "%s", server_name);
-            else
-              snprintf(pdjb->dc_svr, sizeof(pdjb->dc_svr), "%s", pwhere + 1);
-            }
-          else
-            {
-            free(pdjb);
-            free(work_val);
-            return(PBSE_BADATVAL);
-            }
+          pdjb->dc_child.erase(pos);
           }
 
         pd->dp_jobs.push_back(pdjb);
@@ -3304,7 +3292,7 @@ void clear_depend(
     unsigned int dp_jobs_size = pd->dp_jobs.size();
     for (unsigned int i = 0; i < dp_jobs_size; i++)
       {
-      free(pd->dp_jobs[i]);
+      delete pd->dp_jobs[i];
       }
 
     pd->dp_jobs.clear();
@@ -3326,41 +3314,14 @@ void clear_depend(
 
 
 
-
-
-/*
- * del_depend - delete a single dependency set, including any depend_jobs
- */
-
-void del_depend(
-
-  struct depend *pd)
-
-  {
-  unsigned int dp_jobs_size = pd->dp_jobs.size();
-  for (unsigned int i = 0; i < dp_jobs_size; i++)
-    {
-    free(pd->dp_jobs[i]);
-    }
-
-  delete_link(&pd->dp_link);
-
-  free(pd);
-
-  return;
-  }  /* END del_depend() */
-
-
-
-
 /*
  * del_depend_job - delete a single depend_job structure
  */
 
 void del_depend_job(
 
-  struct depend     *pdep,
-  struct depend_job *pdj)
+  depend     *pdep,
+  depend_job *pdj)
 
   {
   // erase pdj from my list
@@ -3374,7 +3335,7 @@ void del_depend_job(
       }
     }
 
-  free(pdj);
+  delete pdj;
   }  /* END del_depend_job() */
 
 /*
@@ -3403,44 +3364,63 @@ void removeAfterAnyDependency(
   
   if (pDep != NULL)
     {
-    struct depend_job *pDepJob = find_dependjob(pDep,pTargetJobID);
+    depend_job *pDepJob = find_dependjob(pDep,pTargetJobID);
     if (pDepJob != NULL)
       {
       del_depend_job(pDep, pDepJob);
-      job_mutex.unlock();
-      set_depend_hold(pLockedJob,pattr);
+
+      try
+        {
+        set_depend_hold(pLockedJob, pattr, NULL);
+        }
+
+      catch (int e)
+        {
+        job_mutex.set_unlock_on_exit(false);
+        }
       }
     }
   }
 
 /*
- * If pJob has an BEFOREANY dependency, remove it.
- * pJob is passed in with the ji_mutex locked.
+ * removeBeforeAnyDependencies()
+ *
+ *
  */
-void removeBeforeAnyDependencies(const char *pJId)
+
+void removeBeforeAnyDependencies(
+    
+  const char *pJId)
+
   {
-  job *pLockedJob = svr_find_job((char *)pJId,FALSE);
-  if(pLockedJob == NULL) return;
-  mutex_mgr job_mutex(pLockedJob->ji_mutex,true);
-  pbs_attribute *pattr = &pLockedJob->ji_wattr[JOB_ATR_depend];
+  job *pLockedJob = svr_find_job(pJId,FALSE);
 
-  struct depend *pDep = find_depend(JOB_DEPEND_TYPE_BEFOREANY,pattr);
-  if(pDep != NULL)
+  if (pLockedJob != NULL)
     {
+    mutex_mgr job_mutex(pLockedJob->ji_mutex,true);
+    pbs_attribute *pattr = &pLockedJob->ji_wattr[JOB_ATR_depend];
 
-    unsigned int dp_jobs_size = pDep->dp_jobs.size();
-    for (unsigned int i = 0; i < dp_jobs_size; i++)
+    struct depend *pDep = find_depend(JOB_DEPEND_TYPE_BEFOREANY,pattr);
+    if (pDep != NULL)
       {
-      struct depend_job *pDepJob = pDep->dp_jobs[i];
-      std::string depID(pDepJob->dc_child);
-      job_mutex.unlock();
-      removeAfterAnyDependency(depID.c_str(),pJId);
-      pLockedJob = svr_find_job((char *)pJId,FALSE);
-      if(pLockedJob == NULL) return;
-      job_mutex.mark_as_locked();
+
+      unsigned int dp_jobs_size = pDep->dp_jobs.size();
+      for (unsigned int i = 0; i < dp_jobs_size; i++)
+        {
+        depend_job *pDepJob = pDep->dp_jobs[i];
+        std::string depID(pDepJob->dc_child);
+        job_mutex.unlock();
+        removeAfterAnyDependency(depID.c_str(),pJId);
+        pLockedJob = svr_find_job(pJId,FALSE);
+        if (pLockedJob == NULL)
+          return;
+
+        job_mutex.mark_as_locked();
+        }
       }
     }
-  }
+
+  } // END removeBeforeAnyDependencies()
 
 
 

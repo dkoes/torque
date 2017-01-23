@@ -3,6 +3,7 @@
 #include "lib_mom.h" /* header */
 
 #include <string>
+#include <vector>
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
@@ -66,6 +67,17 @@
 #include "mom_config.h"
 #include "timer.hpp"
 
+#ifdef PENABLE_LINUX_CGROUPS
+#include "machine.hpp"
+#include "trq_cgroups.h"
+#include "complete_req.hpp"
+#include "req.hpp"
+#endif
+
+#ifdef USE_RESOURCE_PLUGIN
+#include "trq_plugin_api.h"
+#endif
+
 
 /*
 ** System dependent code to gather information for the resource
@@ -102,7 +114,7 @@
 
 static char    procfs[] = "/proc";
 static DIR    *pdir = NULL;
-int            pagesize;
+int     pagesize;
 
 pid2procarrayindex_map_t pid2procarrayindex_map;
 
@@ -115,23 +127,27 @@ extern  int     LOGLEVEL;
 #define TBL_INC 200            /* initial proc table */
 #define PMEMBUF_SIZE  2048
 
+#ifdef PENABLE_LINUX_CGROUPS
+extern Machine this_node;
+extern char    mom_alias[];
+#endif
+
 proc_stat_t   *proc_array = NULL;
 static int            nproc = 0;
 static int            max_proc = 0;
 
-extern pid2jobsid_map_t pid2jobsid_map;
+extern pid2jobsid_map_t pid2jobsid_map; 
 
 /*
 ** external functions and data
 */
 extern job_pid_set_t    global_job_sid_set;
-extern tlist_head               svr_alljobs;
 extern struct  config          *search(struct config *,char *);
 extern struct  rm_attribute    *momgetattr(char *);
 extern long     system_ncpus;
 #ifdef NUMA_SUPPORT
 extern int       num_node_boards;
-extern nodeboard node_boards[]; 
+extern nodeboard node_boards[];
 extern int       numa_index;
 #else
 extern char  path_meminfo[MAX_LINE];
@@ -253,6 +269,12 @@ void proc_get_btime(void)
 
   fclose(fp);
 
+  if (LOGLEVEL >= 7)
+    {
+    sprintf(log_buffer, "DRIFT debug: getting btime, setting linux_time to %ld", (long)linux_time);
+    log_event(PBSEVENT_DEBUG, PBS_EVENTCLASS_MOM, "linux_time", log_buffer);
+    }
+
   return;
   }  /* END proc_get_btime() */
 
@@ -287,7 +309,7 @@ void skip_space_delimited_values(
 
     if (curr_ptr == NULL)
       break;
-    
+
     spaces_found++;
     curr_ptr++;
     }
@@ -317,7 +339,7 @@ void skip_space_delimited_values(
  * <flags> <minflt>* <cminflt>* <majflt>* <cmajflt> <utime> <stime>
  * <cutime> <cstime> <priority>* <nice>* <0>* <itrealvalue>* <starttime>
  * <vsize> <rss> ...
- * and populates the relevant values into ps. Values marked with * are 
+ * and populates the relevant values into ps. Values marked with * are
  * ignored.
  *
  * @param buffer - the buffer containing this information. I
@@ -339,7 +361,7 @@ int populate_stats_from_the_buffer(
   char          *curr_ptr;
   char          *ptr;
   unsigned long  jstarttime;
-  
+
   static int Hertz  = 0;
   static int Hertz_errored = 0;
 
@@ -380,7 +402,7 @@ int populate_stats_from_the_buffer(
   snprintf(path, path_size, "%s", ptr + 1);
 
   curr_ptr = lastbracket;
-  
+
   // last bracket is currently in the format
   //  '%c %d %d %d %*d %*d %u %*u %*u %*u %*u %lu %lu %lu' +
   //  ' %lu %*ld %*ld %*u %*ld %lu %llu %lld'
@@ -388,7 +410,7 @@ int populate_stats_from_the_buffer(
   // skip the ' ' and read the state
   curr_ptr++;
   ps.state = *curr_ptr;
-  
+
   // move past this value and the next space
   curr_ptr += 2;
 
@@ -417,7 +439,7 @@ int populate_stats_from_the_buffer(
   // read the utime - cycles that the process has been in user mode
   ps.utime = strtoll(curr_ptr, &curr_ptr, 10);
   curr_ptr++;
-  
+
   // read the stime - cycles that the process has been in system mode
   ps.stime = strtoll(curr_ptr, &curr_ptr, 10);
   curr_ptr++;
@@ -443,7 +465,7 @@ int populate_stats_from_the_buffer(
 
   // read the stack size
   ps.rss = strtoll(curr_ptr, &curr_ptr, 10);
-  
+
   ps.start_time = linux_time + JTOS(jstarttime);
   ps.name = path;
 
@@ -552,7 +574,7 @@ long long get_memacct_resi(pid_t pid)
 
 /*
  * get_proc_mem_from_path()
- * @returns a pointer to a struct containing the memory information 
+ * @returns a pointer to a struct containing the memory information
  * @pre-cond: path must point to a valid path of a meminfo system file
  */
 
@@ -774,7 +796,7 @@ proc_mem_t *get_proc_mem(void)
     }
 #else
   mem = get_proc_mem_from_path(path_meminfo);
-  
+
   if(mem == NULL)
     return (NULL);
 
@@ -833,39 +855,59 @@ proc_mem_t *get_proc_mem(void)
 #endif /* PNOT */
 
 /*
- * sets oom_adj score for current process 
+ * sets oom_adj score for current process
  * requires root privileges or CAP_SYS_RESOURCE to succeed
  */
 
 static int oom_adj(int score)
-{
+  
+  {
+  pid_t pid;
+  int   rc;
+  int   fd;
 
-   pid_t pid;
-   int rc,fd;
+  char oom_adj_path[PATH_MAX] = "";
+  char adj_value[128] = "";
+   
+  /* max valid values are -1000 to 1000 */
+  if ((score > 1000) ||
+      (score < -1000))
+    return -1;
+  
+  pid = getpid();
+  
+  snprintf(oom_adj_path, sizeof(oom_adj_path), "/proc/%d/oom_score_adj", pid);
+   
+  /* try and open the oom_score_adj file for writing first */
+  /* if it fails to open then try oom_adj */
+  if ((fd = open(oom_adj_path, O_RDWR)) == -1 )
+    {
+    if (score < -17)
+      score = -17;
+    else if (score > 15)
+      score = 15;
+     
+    snprintf(oom_adj_path, sizeof(oom_adj_path), "/proc/%d/oom_adj", pid);
 
-   char oom_adj_path[PATH_MAX] = "";
-   char adj_value[128] = "";
-   /* valid values are -17 to 15 */
-   if ( score > 15 || score < -17 )
+    if ((fd = open(oom_adj_path, O_RDWR)) == -1)
       return -1;
-
-   pid = getpid();
-
-   if ( snprintf(oom_adj_path, sizeof(oom_adj_path), "/proc/%d/oom_adj", pid) < 0 )
+     
+    if (snprintf(adj_value,sizeof(adj_value),"%d",score) < 0)
       return -1;
+     
+    rc = write(fd,adj_value,strlen(adj_value));
+     
+    close(fd);
+    return rc;   
+    }
 
-   if ( ( fd = open(oom_adj_path, O_RDWR) ) == -1 )
-      return -1;
+  snprintf(adj_value,sizeof(adj_value),"%d",score);
 
-   if (snprintf(adj_value,sizeof(adj_value),"%d",score) < 0)
-      return -1;
+  rc = write(fd,adj_value,strlen(adj_value));
 
-   rc = write(fd,adj_value,strlen(adj_value));
-
-   close(fd);
-   return rc;
-
-}
+  close(fd);
+  return rc;
+  }
 
 
 void dep_initialize(void)
@@ -876,7 +918,7 @@ void dep_initialize(void)
   if ((pdir = opendir(procfs)) == NULL)
     {
     log_err(errno, __func__, "opendir");
-    
+
     return;
     }
 
@@ -885,8 +927,8 @@ void dep_initialize(void)
   /* LKF: make pbs_mom processes immune to oom killer's killing frenzy if requested*/
   if (mom_oom_immunize != 0)
     {
-    
-    if (oom_adj(-17) < 0)
+
+    if (oom_adj(-1000) < 0)
       {
       log_record(
         PBSEVENT_SYSTEM,
@@ -1058,10 +1100,10 @@ bool injob(
     }
 
   /* Next, check the job's tasks to see if they match the session id */
-  for (task *ptask = (task *)GET_NEXT(pjob->ji_tasks);
-       ptask != NULL;
-       ptask = (task *)GET_NEXT(ptask->ti_jobtask))
+  for (unsigned int i = 0; i < pjob->ji_tasks->size(); i++)
     {
+    task *ptask = pjob->ji_tasks->at(i);
+
     if (job_sid_of_pid == ptask->ti_qs.ti_sid)
       return(true);
     }
@@ -1077,6 +1119,8 @@ bool injob(
  * consumed for all tasks executed by the job, in seconds,
  * adjusted by cputfactor.
  */
+
+#ifndef PENABLE_LINUX_CGROUPS
 
 unsigned long cput_sum(
 
@@ -1111,7 +1155,7 @@ unsigned long cput_sum(
       {
       continue;
       }
-
+    
     /* pid is in the job */
 
     /* get the index of this pid in the proc_array */
@@ -1121,7 +1165,7 @@ unsigned long cput_sum(
     if (pa_iter == pid2procarrayindex_map.end())
       {
       /* not in map so skip */
-       continue;
+      continue;
       }
 
     /* assign index to the index of the pid in proc_array */
@@ -1157,6 +1201,106 @@ unsigned long cput_sum(
 
 
 
+#else
+#define LOCAL_BUF_SIZE 256
+
+unsigned long cput_sum(
+
+    job *pjob)
+
+  {
+  ulong        cputime = 0; 
+  std::string  full_cgroup_path;
+  int          fd;
+  int          rc;
+  char         buf[LOCAL_BUF_SIZE];
+
+  pbs_attribute *pattr;
+  pattr = &pjob->ji_wattr[JOB_ATR_req_information];
+  if ((pattr != NULL) && (pattr->at_flags & ATR_VFLAG_SET) == 1)
+    {
+    unsigned int    req_index;
+    int    rc;
+    const char  *job_id = pjob->ji_qs.ji_jobid;
+
+    complete_req  *cr = (complete_req *)pattr->at_val.at_ptr;
+    rc = cr->get_req_index_for_host(mom_alias, req_index);
+    if (rc != PBSE_NONE)
+      {
+      sprintf(buf, "Could not find req for host %s, job_id %s", mom_alias, pjob->ji_qs.ji_jobid);
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, buf);
+      return(cputime);
+      }
+
+    req &host_req = cr->get_req(req_index);
+
+    for (unsigned int task_index = 0; task_index < host_req.get_req_allocation_count(); task_index++)
+      {
+      unsigned long cput_used;
+      std::string   task_host;
+
+      host_req.get_task_host_name(task_host, task_index);
+      if (task_hosts_match(task_host.c_str(), mom_alias) == false)
+        {
+        /* names don't match. Got to next task */
+        continue;
+        }
+
+      rc = trq_cg_get_task_cput_stats(job_id, req_index, task_index, cput_used);
+      if (rc != PBSE_NONE)
+        continue;
+
+      cr->set_task_cput_used(req_index, task_index, cput_used/NANO_SECONDS);
+
+      }
+    pjob->ji_flags &= ~MOM_NO_PROC;
+    }
+
+    /* This is not a -L request */
+
+    full_cgroup_path = cg_cpuacct_path + pjob->ji_qs.ji_jobid + "/cpuacct.usage";
+
+    fd = open(full_cgroup_path.c_str(), O_RDONLY);
+    if (fd <= 0)
+      {
+      if (pjob->ji_cgroups_created == true)
+        {
+        sprintf(buf, "failed to open %s: %s", full_cgroup_path.c_str(), strerror(errno));
+        log_err(-1, __func__, buf);
+        }
+      return(0);
+      }
+
+    rc = read(fd, buf, LOCAL_BUF_SIZE);
+    if (rc == -1)
+      {
+      sprintf(buf, "failed to read %s: %s", full_cgroup_path.c_str(), strerror(errno));
+      log_err(-1, __func__, buf);
+      close(fd);
+      return(0);
+      }
+    else if (rc != 0) /* if rc is 0 something is not right but it is not a critical error. Don't do anything */
+    {
+    ulong nano_seconds;
+    /* successful read. Should be a number in nano-seconds */
+
+    nano_seconds = atol(buf);
+    cputime += nano_seconds;
+    }
+
+    /* convert the nano seconds to seconds */
+    cputime = cputime/NANO_SECONDS;
+
+    pjob->ji_flags &= ~MOM_NO_PROC;
+
+    close(fd);
+    
+
+  return(cputime);
+  
+  }
+
+#endif /* #ifndef PENABLE_LINUX_CGROUPS */
 
 
 /*
@@ -1217,8 +1361,6 @@ int overcpu_proc(
 
   return(FALSE);
   }  /* END overcpu_proc() */
-
-
 
 
 
@@ -1298,7 +1440,7 @@ unsigned long long mem_sum(
 
 
 
-
+#ifndef PENABLE_LINUX_CGROUPS
 /*
  * Internal session memory usage function.
  *
@@ -1406,6 +1548,100 @@ unsigned long long resi_sum(
   return(resisize);
   }  /* END resi_sum() */
 
+#else
+
+unsigned long long resi_sum(
+
+  job *pjob)
+
+  {
+  unsigned long long resisize = 0;
+  std::string  full_cgroup_path;
+  char         buf[LOCAL_BUF_SIZE];
+  int          fd;
+  int          rc;
+
+  pbs_attribute *pattr;
+  pattr = &pjob->ji_wattr[JOB_ATR_req_information];
+  if ((pattr != NULL) && (pattr->at_flags & ATR_VFLAG_SET) != 0)
+    {
+    int          rc;
+    unsigned int req_index;
+
+    complete_req  *cr = (complete_req *)pattr->at_val.at_ptr;
+    rc = cr->get_req_index_for_host(mom_alias, req_index);
+    if (rc != PBSE_NONE)
+      {
+      sprintf(buf, "Could not find req for host %s, job_id %s", mom_alias, pjob->ji_qs.ji_jobid);
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, buf);
+      return(resisize);
+      }
+
+    req &host_req = cr->get_req(req_index);
+    for (unsigned int task_index = 0; task_index < host_req.get_req_allocation_count(); task_index++)
+      {
+      unsigned long long mem_used;
+      std::string   task_host;
+
+      host_req.get_task_host_name(task_host, task_index);
+      if (task_hosts_match(task_host.c_str(), mom_alias) == false)
+        {
+        /* names don't match. Got to next task */
+        continue;
+        }
+
+      mem_used = 0;
+      rc = trq_cg_get_task_memory_stats(pjob->ji_qs.ji_jobid, req_index, task_index, mem_used);
+      if (rc != PBSE_NONE)
+        continue;
+
+      cr->set_task_memory_used(req_index, task_index, mem_used);
+      resisize += mem_used;
+      }
+    }
+
+  full_cgroup_path = cg_memory_path + pjob->ji_qs.ji_jobid + "/memory.max_usage_in_bytes";
+
+  fd = open(full_cgroup_path.c_str(), O_RDONLY);
+  if (fd <= 0)
+    {
+    if (pjob->ji_cgroups_created == true)
+      {
+      sprintf(buf, "failed to open %s: %s", full_cgroup_path.c_str(), strerror(errno));
+      log_err(-1, __func__, buf);
+      }
+
+    return(0);
+    }
+
+  rc = read(fd, buf, LOCAL_BUF_SIZE);
+  if (rc == -1)
+    {
+    sprintf(buf, "failed to read %s: %s", full_cgroup_path.c_str(), strerror(errno));
+    log_err(-1, __func__, buf);
+    close(fd);
+    return(0);
+    }
+  else if (rc != 0) 
+    {
+    int hardwareStyle;
+    unsigned long long mem_read;
+
+    mem_read = strtoull(buf, NULL, 10);
+
+    hardwareStyle = this_node.getHardwareStyle();
+
+    if (hardwareStyle == AMD) /* AMD adds everything up in the parent cgroup hierarchy and Intel does not */
+      resisize = mem_read;
+    else
+      resisize += mem_read;
+    }
+
+  close(fd);
+
+  return(resisize);
+  }
+#endif
 
 
 
@@ -1534,7 +1770,6 @@ int mom_set_limits(
   const char  *pname = NULL;
   int  retval;
   unsigned long value; /* place in which to build resource value */
-  resource *pres;
 
   struct rlimit reslim;
   unsigned long vmem_limit = 0;
@@ -1558,8 +1793,6 @@ int mom_set_limits(
 
   assert(pjob->ji_wattr[JOB_ATR_resource].at_type == ATR_TYPE_RESC);
 
-  pres = (resource *)GET_NEXT(pjob->ji_wattr[JOB_ATR_resource].at_val.at_list);
-
   /*
    * cycle through all the resource specifications,
    * setting limits appropriately.
@@ -1573,165 +1806,148 @@ int mom_set_limits(
     {
     retval = oom_adj(job_oom_score_adjust);
 
-    if ( LOGLEVEL >= 2 ) 
+    if ( LOGLEVEL >= 2 )
       {
       sprintf(log_buffer, "setting oom_adj '%s'",
         (retval != -1) ? "succeeded" : "failed");
       log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
       }
 
-    };
+    }
 
-
-  while (pres != NULL)
+  if (pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr != NULL)
     {
-    if (pres->rs_defin != NULL)
-      pname = pres->rs_defin->rs_name;
-    else
-      pname = NULL;
+    std::vector<resource> *resources = (std::vector<resource> *)pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr;
 
-    if (LOGLEVEL >= 2)
+    for (size_t i = 0; i < resources->size(); i++)
       {
-      sprintf(log_buffer, "setting limit for attribute '%s'",
-              (pname != NULL) ? pname : "NULL");
+      resource &r = resources->at(i);
 
-      log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
+      if (r.rs_defin != NULL)
+        pname = r.rs_defin->rs_name;
+      else
+        pname = NULL;
 
-      log_buffer[0] = '\0';
-      }
-
-    assert(pres->rs_defin != NULL);
-
-    assert(pname != NULL);
-
-    assert(pname[0] != '\0');
-
-    if (!strcmp(pname, "cput"))
-      {
-      if (igncput == FALSE)
+      if (LOGLEVEL >= 2)
         {
-        /* cpu time - check, if less than pcput use it */
+        sprintf(log_buffer, "setting limit for attribute '%s'",
+                (pname != NULL) ? pname : "NULL");
 
-        retval = mm_gettime(pres, &value);
+        log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
 
-        if (retval != PBSE_NONE)
-          {
-          sprintf(log_buffer, "cput mm_gettime failed in %s", __func__);
-
-          return(error(pname, retval));
-          }
+        log_buffer[0] = '\0';
         }
-      }
-    else if (!strcmp(pname, "pcput"))
-      {
-      if (igncput == FALSE)
-        {
-        if (set_mode == SET_LIMIT_SET)
-          {
-          /* process cpu time - set */
 
-          retval = mm_gettime(pres, &value);
+      assert(r.rs_defin != NULL);
+
+      assert(pname != NULL);
+
+      assert(pname[0] != '\0');
+
+      if (!strcmp(pname, "cput"))
+        {
+        if (igncput == FALSE)
+          {
+          /* cpu time - check, if less than pcput use it */
+
+          retval = mm_gettime(&r, &value);
 
           if (retval != PBSE_NONE)
             {
-            sprintf(log_buffer, "pcput mm_gettime failed in %s", __func__);
+            sprintf(log_buffer, "cput mm_gettime failed in %s", __func__);
 
             return(error(pname, retval));
             }
-
-          reslim.rlim_cur = reslim.rlim_max =
-            (unsigned long)((double)value / cputfactor);
-
-          if (LOGLEVEL >= 2)
-            {
-            sprintf(log_buffer, "setting cpu time limit to %ld for job %s",
-              (long int)reslim.rlim_cur,
-              pjob->ji_qs.ji_jobid);
-
-            log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
-
-            log_buffer[0] = '\0';
-            }
-
-          /* NOTE: some versions of linux have a bug which causes the parent
-                   process to receive a SIGKILL if the child's cpu limit is exceeded */
-
-          if (setrlimit(RLIMIT_CPU, &reslim) < 0)
-            {
-            sprintf(log_buffer, "setrlimit for RLIMIT_CPU failed in %s, errno=%d (%s)",
-              __func__,
-              errno, strerror(errno));
-
-            return(error("RLIMIT_CPU", PBSE_SYSTEM));
-            }
-          }    /* END if (set_mode == SET_LIMIT_SET) */
+          }
         }
-      }
-    else if (!strcmp(pname, "file"))
-      {
-      /* set */
-
-      if (set_mode == SET_LIMIT_SET)
+      else if (!strcmp(pname, "pcput"))
         {
-        retval = mm_getsize(pres, &value);
-
-        if (retval != PBSE_NONE)
+        if (igncput == FALSE)
           {
-          sprintf(log_buffer, "mm_getsize() failed for file in %s",
-                  __func__);
+          if (set_mode == SET_LIMIT_SET)
+            {
+            /* process cpu time - set */
 
-          return(error(pname, retval));
-          }
+            retval = mm_gettime(&r, &value);
 
-        reslim.rlim_cur = reslim.rlim_max = value;
+            if (retval != PBSE_NONE)
+              {
+              sprintf(log_buffer, "pcput mm_gettime failed in %s", __func__);
 
-        if (setrlimit(RLIMIT_FSIZE, &reslim) < 0)
-          {
-          sprintf(log_buffer, "cannot set file limit to %ld for job %s (setrlimit failed - check default user limits)",
-                  (long int)reslim.rlim_max,
-                  pjob->ji_qs.ji_jobid);
+              return(error(pname, retval));
+              }
 
-          log_err(errno, __func__, log_buffer);
+            reslim.rlim_cur = reslim.rlim_max =
+              (unsigned long)((double)value / cputfactor);
 
-          log_buffer[0] = '\0';
+            if (LOGLEVEL >= 2)
+              {
+              sprintf(log_buffer, "setting cpu time limit to %ld for job %s",
+                (long int)reslim.rlim_cur,
+                pjob->ji_qs.ji_jobid);
 
-          return(error(pname, PBSE_SYSTEM));
+              log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
+
+              log_buffer[0] = '\0';
+              }
+
+            /* NOTE: some versions of linux have a bug which causes the parent
+                     process to receive a SIGKILL if the child's cpu limit is exceeded */
+
+            if (setrlimit(RLIMIT_CPU, &reslim) < 0)
+              {
+              sprintf(log_buffer, "setrlimit for RLIMIT_CPU failed in %s, errno=%d (%s)",
+                __func__,
+                errno, strerror(errno));
+
+              return(error("RLIMIT_CPU", PBSE_SYSTEM));
+              }
+            }    /* END if (set_mode == SET_LIMIT_SET) */
           }
         }
-      }
-    else if (!strcmp(pname, "vmem"))
-      {
-      if (ignvmem == FALSE)
-        {
-        /* check */
-
-        retval = mm_getsize(pres, &value);
-
-        if (retval != PBSE_NONE)
-          {
-          sprintf(log_buffer, "mm_getsize() failed for vmem in %s", __func__);
-
-          return(error(pname, retval));
-          }
-
-        if ((vmem_limit == 0) || (value < vmem_limit))
-          vmem_limit = value;
-        }
-      }
-    else if (!strcmp(pname, "pvmem"))
-      {
-      if (ignvmem == FALSE)
+      else if (!strcmp(pname, "file"))
         {
         /* set */
 
         if (set_mode == SET_LIMIT_SET)
           {
-          retval = mm_getsize(pres, &value);
+          retval = mm_getsize(&r, &value);
 
           if (retval != PBSE_NONE)
             {
-            sprintf(log_buffer, "mm_getsize() failed for pvmem in %s",
-              __func__);
+            sprintf(log_buffer, "mm_getsize() failed for file in %s",
+                    __func__);
+
+            return(error(pname, retval));
+            }
+
+          reslim.rlim_cur = reslim.rlim_max = value;
+
+          if (setrlimit(RLIMIT_FSIZE, &reslim) < 0)
+            {
+            sprintf(log_buffer, "cannot set file limit to %ld for job %s (setrlimit failed - check default user limits)",
+                    (long int)reslim.rlim_max,
+                    pjob->ji_qs.ji_jobid);
+
+            log_err(errno, __func__, log_buffer);
+
+            log_buffer[0] = '\0';
+
+            return(error(pname, PBSE_SYSTEM));
+            }
+          }
+        }
+      else if (!strcmp(pname, "vmem"))
+        {
+        if (ignvmem == FALSE)
+          {
+          /* check */
+
+          retval = mm_getsize(&r, &value);
+
+          if (retval != PBSE_NONE)
+            {
+            sprintf(log_buffer, "mm_getsize() failed for vmem in %s", __func__);
 
             return(error(pname, retval));
             }
@@ -1740,190 +1956,211 @@ int mom_set_limits(
             vmem_limit = value;
           }
         }
-      }
-    else if ((!strcmp(pname,"mem") && (pjob->ji_numnodes != 1)) ||
-              !strcmp(pname,"mppmem"))
-      {
-      /* ignore. If we ever get rid of support for the UNICOS OS then we can
-         remove the ATR_DFLAG_MOM | ATR_DFLAG_ALTRUN flags from mppmem */
-      }
-    else if ((!strcmp(pname, "mem") && (pjob->ji_numnodes == 1)) ||
-             !strcmp(pname, "pmem"))
-      {
-      if (ignmem == FALSE)
+      else if (!strcmp(pname, "pvmem"))
         {
-        /* set */
-
-        if (set_mode == SET_LIMIT_SET)
+        if (ignvmem == FALSE)
           {
-          retval = mm_getsize(pres, &value);
+          /* set */
 
-          if (retval != PBSE_NONE)
+          if (set_mode == SET_LIMIT_SET)
             {
-            sprintf(log_buffer, "mm_getsize() failed for mem/pmem in %s",
-              __func__);
+            retval = mm_getsize(&r, &value);
 
-            return(error(pname, retval));
+            if (retval != PBSE_NONE)
+              {
+              sprintf(log_buffer, "mm_getsize() failed for pvmem in %s",
+                __func__);
+
+              return(error(pname, retval));
+              }
+
+            if ((vmem_limit == 0) || (value < vmem_limit))
+              vmem_limit = value;
             }
+          }
+        }
+      else if ((!strcmp(pname,"mem") && (pjob->ji_numnodes != 1)) ||
+                !strcmp(pname,"mppmem"))
+        {
+        /* ignore. If we ever get rid of support for the UNICOS OS then we can
+           remove the ATR_DFLAG_MOM | ATR_DFLAG_ALTRUN flags from mppmem */
+        }
+      else if ((!strcmp(pname, "mem") && (pjob->ji_numnodes == 1)) ||
+               !strcmp(pname, "pmem"))
+        {
+        if (ignmem == FALSE)
+          {
+          /* set */
 
-          reslim.rlim_cur = reslim.rlim_max = value;
-
-          if (setrlimit(RLIMIT_DATA, &reslim) < 0)
+          if (set_mode == SET_LIMIT_SET)
             {
-            sprintf(log_buffer, "cannot set data limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
-              (long int)reslim.rlim_max,
-              pjob->ji_qs.ji_jobid,
-              errno,
-              strerror(errno));
+            retval = mm_getsize(&r, &value);
 
-            return(error("RLIMIT_DATA", PBSE_SYSTEM));
-            }
+            if (retval != PBSE_NONE)
+              {
+              sprintf(log_buffer, "mm_getsize() failed for mem/pmem in %s",
+                __func__);
 
-          if (setrlimit(RLIMIT_RSS, &reslim) < 0)
-            {
-            sprintf(log_buffer, "cannot set RSS limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
-              (long int)reslim.rlim_max,
-              pjob->ji_qs.ji_jobid,
-              errno,
-              strerror(errno));
+              return(error(pname, retval));
+              }
 
-            return(error("RLIMIT_RSS", PBSE_SYSTEM));
-            }
+            reslim.rlim_cur = reslim.rlim_max = value;
+
+            if (setrlimit(RLIMIT_DATA, &reslim) < 0)
+              {
+              sprintf(log_buffer, "cannot set data limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
+                (long int)reslim.rlim_max,
+                pjob->ji_qs.ji_jobid,
+                errno,
+                strerror(errno));
+
+              return(error("RLIMIT_DATA", PBSE_SYSTEM));
+              }
+
+            if (setrlimit(RLIMIT_RSS, &reslim) < 0)
+              {
+              sprintf(log_buffer, "cannot set RSS limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
+                (long int)reslim.rlim_max,
+                pjob->ji_qs.ji_jobid,
+                errno,
+                strerror(errno));
+
+              return(error("RLIMIT_RSS", PBSE_SYSTEM));
+              }
 
 #ifdef __GATECH
-          /* NOTE:  best patch may be to change to 'vmem_limit = value;' */
+            /* NOTE:  best patch may be to change to 'vmem_limit = value;' */
 
-          if (setrlimit(RLIMIT_STACK, &reslim) < 0)
-            {
-            sprintf(log_buffer, "cannot set stack limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
-              (long int)reslim.rlim_max,
-              pjob->ji_qs.ji_jobid,
-              errno,
-              strerror(errno));
+            if (setrlimit(RLIMIT_STACK, &reslim) < 0)
+              {
+              sprintf(log_buffer, "cannot set stack limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
+                (long int)reslim.rlim_max,
+                pjob->ji_qs.ji_jobid,
+                errno,
+                strerror(errno));
 
-            return(error("RLIMIT_STACK", PBSE_SYSTEM));
-            }
+              return(error("RLIMIT_STACK", PBSE_SYSTEM));
+              }
 
-          /* set address space */
+            /* set address space */
 
-          if (setrlimit(RLIMIT_AS, &reslim) < 0)
-            {
-            sprintf(log_buffer, "cannot set AS limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
-              (long int)reslim.rlim_max,
-              pjob->ji_qs.ji_jobid,
-              errno,
-              strerror(errno));
+            if (setrlimit(RLIMIT_AS, &reslim) < 0)
+              {
+              sprintf(log_buffer, "cannot set AS limit to %ld for job %s (setrlimit failed w/errno=%d (%s) - check default user limits)",
+                (long int)reslim.rlim_max,
+                pjob->ji_qs.ji_jobid,
+                errno,
+                strerror(errno));
 
-            return(error("RLIMIT_AS", PBSE_SYSTEM));
-            }
+              return(error("RLIMIT_AS", PBSE_SYSTEM));
+              }
 
 #endif /* __GATECH */
 
-          mem_limit = value;
+            mem_limit = value;
 
-          if (getrlimit(RLIMIT_STACK, &reslim) >= 0)
+            if (getrlimit(RLIMIT_STACK, &reslim) >= 0)
+              {
+              /* NOTE:  mem_limit no longer used with UMU patch in place */
+
+              mem_limit = value + reslim.rlim_cur;
+              }
+            }
+          }
+        }    /* END else if (!strcmp(pname,"mem") && ... */
+      else if (!strcmp(pname, "walltime"))
+        {
+        /* check */
+
+        retval = mm_gettime(&r, &value);
+
+        if (retval != PBSE_NONE)
+          {
+          sprintf(log_buffer, "mm_gettime() failed for walltime in %s\n",
+                  __func__);
+
+          return(error(pname, retval));
+          }
+        }
+      else if (!strcmp(pname, "nice"))
+        {
+        /* set nice */
+
+        if (set_mode == SET_LIMIT_SET)
+          {
+          errno = 0;
+
+          if ((nice((int)r.rs_value.at_val.at_long) == -1) && (errno != 0))
             {
-            /* NOTE:  mem_limit no longer used with UMU patch in place */
+            sprintf(log_buffer, "nice() failed w/errno=%d (%s) in %s\n",
+                    errno,
+                    strerror(errno),
+                    __func__);
 
-            mem_limit = value + reslim.rlim_cur;
+            return(error(pname, PBSE_BADATVAL));
             }
           }
         }
-      }    /* END else if (!strcmp(pname,"mem") && ... */
-    else if (!strcmp(pname, "walltime"))
-      {
-      /* check */
-
-      retval = mm_gettime(pres, &value);
-
-      if (retval != PBSE_NONE)
+      else if (!strcmp(pname, "cpuclock"))   /* Set cpu frequency */
         {
-        sprintf(log_buffer, "mm_gettime() failed for walltime in %s\n",
+        if(set_mode == SET_LIMIT_SET)
+          {
+          std::string beforeFreq;
+          char requestedFreq[100];
+
+          from_frequency(&(r.rs_value.at_val.at_frequency),requestedFreq);
+
+          nd_frequency.get_frequency_string(beforeFreq);
+          if (!nd_frequency.set_frequency((cpu_frequency_type)r.rs_value.at_val.at_frequency.frequency_type,
+              r.rs_value.at_val.at_frequency.mhz,
+              r.rs_value.at_val.at_frequency.mhz))
+            {
+            std::string msg = "Failed to change frequency.";
+            log_ext(nd_frequency.get_last_error(),__func__,msg.c_str(),LOG_ERR);
+            }
+          else
+            {
+            std::string afterFreq;
+            nd_frequency.get_frequency_string(afterFreq);
+            std::string msg = "Changed frequency from " + beforeFreq + " to " + afterFreq + " requested frequency was " + requestedFreq;
+            log_ext(PBSE_CHANGED_CPU_FREQUENCY,__func__, msg.c_str(),LOG_NOTICE);
+            }
+          }
+        }
+      else if (!strcmp(pname, "size"))
+        {
+        /* ignore */
+
+        /* NO-OP */
+        }
+      else if (!strcmp(pname, "prologue"))
+        {
+        }
+      else if (!strcmp(pname, "epilogue"))
+        {
+        }
+      else if ((!strcmp(pname, "mppdepth"))  ||
+               (!strcmp(pname, "mppnodect")) ||
+               (!strcmp(pname, "mppwidth")) ||
+               (!strcmp(pname, "mppnppn")) ||
+               (!strcmp(pname, "mppnodes")) ||
+               (!strcmp(pname, "mpplabels")) ||
+               (!strcmp(pname, "mpparch")) ||
+               (!strcmp(pname, "mpplabel")))
+        {
+        /* NO-OP */
+        }
+      else if ((r.rs_defin->rs_flags & ATR_DFLAG_RMOMIG) == 0)
+        {
+        /* don't recognize and not marked as ignore by mom */
+
+        sprintf(log_buffer, "do not know how to process resource '%s' in %s\n",
+                pname,
                 __func__);
 
-        return(error(pname, retval));
+        return(error(pname, PBSE_UNKRESC));
         }
       }
-    else if (!strcmp(pname, "nice"))
-      {
-      /* set nice */
-
-      if (set_mode == SET_LIMIT_SET)
-        {
-        errno = 0;
-
-        if ((nice((int)pres->rs_value.at_val.at_long) == -1) && (errno != 0))
-          {
-          sprintf(log_buffer, "nice() failed w/errno=%d (%s) in %s\n",
-                  errno,
-                  strerror(errno),
-                  __func__);
-
-          return(error(pname, PBSE_BADATVAL));
-          }
-        }
-      }
-    else if (!strcmp(pname, "cpuclock"))   /* Set cpu frequency */
-      {
-      if(set_mode == SET_LIMIT_SET)
-        {
-        std::string beforeFreq;
-        char requestedFreq[100];
-
-        from_frequency(&(pres->rs_value.at_val.at_frequency),requestedFreq);
-
-        nd_frequency.get_frequency_string(beforeFreq);
-        if(!nd_frequency.set_frequency((cpu_frequency_type)pres->rs_value.at_val.at_frequency.frequency_type,
-            pres->rs_value.at_val.at_frequency.mhz,
-            pres->rs_value.at_val.at_frequency.mhz))
-          {
-          std::string msg = "Failed to change frequency.";
-          log_ext(nd_frequency.get_last_error(),__func__,msg.c_str(),LOG_ERR);
-          }
-        else
-          {
-          std::string afterFreq;
-          nd_frequency.get_frequency_string(afterFreq);
-          std::string msg = "Changed frequency from " + beforeFreq + " to " + afterFreq + " requested frequency was " + requestedFreq;
-          log_ext(PBSE_CHANGED_CPU_FREQUENCY,__func__, msg.c_str(),LOG_NOTICE);
-          }
-        }
-      }
-    else if (!strcmp(pname, "size"))
-      {
-      /* ignore */
-
-      /* NO-OP */
-      }
-    else if (!strcmp(pname, "prologue"))
-      {
-      }
-    else if (!strcmp(pname, "epilogue"))
-      {
-      }
-    else if ((!strcmp(pname, "mppdepth"))  ||
-             (!strcmp(pname, "mppnodect")) ||
-             (!strcmp(pname, "mppwidth")) ||
-             (!strcmp(pname, "mppnppn")) ||
-             (!strcmp(pname, "mppnodes")) ||
-             (!strcmp(pname, "mpplabels")) ||
-             (!strcmp(pname, "mpparch")) ||
-             (!strcmp(pname, "mpplabel")))
-      {
-      /* NO-OP */
-      }   
-    else if ((pres->rs_defin->rs_flags & ATR_DFLAG_RMOMIG) == 0)
-      {
-      /* don't recognize and not marked as ignore by mom */
-
-      sprintf(log_buffer, "do not know how to process resource '%s' in %s\n",
-              pname,
-              __func__);
-
-      return(error(pname, PBSE_UNKRESC));
-      }
-
-    pres = (resource *)GET_NEXT(pres->rs_link);
     }
 
   if (set_mode == SET_LIMIT_SET)
@@ -1975,10 +2212,8 @@ int mom_set_limits(
 
   if (LOGLEVEL >= 5)
     {
-    sprintf(log_buffer, "%s(%s,%s) completed",
-            __func__,
-            (pjob != NULL) ? pjob->ji_qs.ji_jobid : "NULL",
-            (set_mode == SET_LIMIT_SET) ? "set" : "alter");
+    sprintf(log_buffer, "%s(%s,%s) completed", __func__, pjob->ji_qs.ji_jobid,
+      (set_mode == SET_LIMIT_SET) ? "set" : "alter");
 
     log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
 
@@ -2006,7 +2241,6 @@ int mom_do_poll(
 
   {
   const char  *pname;
-  resource *pres;
 
   assert(pjob != NULL);
 
@@ -2023,35 +2257,35 @@ int mom_do_poll(
 
   assert(pjob->ji_wattr[JOB_ATR_resource].at_type == ATR_TYPE_RESC);
 
-  pres = (resource *)GET_NEXT(
-           pjob->ji_wattr[JOB_ATR_resource].at_val.at_list);
+  std::vector<resource> *resources = (std::vector<resource> *)pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr;
 
-  while (pres != NULL)
+  if (resources != NULL)
     {
-    assert(pres->rs_defin != NULL);
-
-    pname = pres->rs_defin->rs_name;
-
-    assert(pname != NULL);
-    assert(*pname != '\0');
-
-    if (strcmp(pname, "walltime") == 0 ||
-        strcmp(pname, "cput") == 0 ||
-        strcmp(pname, "pcput") == 0 ||
-        strcmp(pname, "mem") == 0 ||
-        strcmp(pname, "pvmem") == 0 ||
-        strcmp(pname, "vmem") == 0)
+    for (size_t i = 0; i < resources->size(); i++)
       {
-      return(TRUE);
-      }
+      resource &r = resources->at(i);
 
-    pres = (resource *)GET_NEXT(pres->rs_link);
+      assert(r.rs_defin != NULL);
+
+      pname = r.rs_defin->rs_name;
+
+      assert(pname != NULL);
+      assert(*pname != '\0');
+
+      if (strcmp(pname, "walltime") == 0 ||
+          strcmp(pname, "cput") == 0 ||
+          strcmp(pname, "pcput") == 0 ||
+          strcmp(pname, "mem") == 0 ||
+          strcmp(pname, "pvmem") == 0 ||
+          strcmp(pname, "vmem") == 0)
+        {
+        return(TRUE);
+        }
+      }
     }
 
   return(FALSE);
   }  /* END mom_do_poll() */
-
-
 
 
 
@@ -2212,7 +2446,7 @@ int mom_get_sample(void)
     if ((pdir = opendir(procfs)) == NULL)
       return(PBSE_SYSTEM);
     }
-    
+
   rewinddir(pdir);
 
   while ((dent = readdir(pdir)) != NULL)
@@ -2283,7 +2517,7 @@ int mom_get_sample(void)
     log_record(PBSEVENT_DEBUG, 0, __func__, log_buffer);
     }
 
-  /* We have filled the proc_array table. Now find all of the processes that actually belong to a job and 
+  /* We have filled the proc_array table. Now find all of the processes that actually belong to a job and
      add them to the pid2jobsid_map associating the process id with the session id of the job to which it belongs */
 
   for ( int i = 0; i < nproc; i++)
@@ -2321,12 +2555,10 @@ int mom_get_sample(void)
 
 
 
-
-
 /*
  * Measure job resource usage and compare with its limits.
  *
- * If it has exceeded any well-formed polled limit return the limit that 
+ * If it has exceeded any well-formed polled limit return the limit that
  * it exceeded.
  * Otherwise, return PBSE_NONE.  log_buffer is populated with failure.
  */
@@ -2342,114 +2574,116 @@ int mom_over_limit(
   unsigned long      num;
   unsigned long long numll;
 
-  resource *pres;
-
   assert(pjob != NULL);
   assert(pjob->ji_wattr[JOB_ATR_resource].at_type == ATR_TYPE_RESC);
 
-  pres = (resource *)GET_NEXT(
-           pjob->ji_wattr[JOB_ATR_resource].at_val.at_list);
+  std::vector<resource> *resources = (std::vector<resource> *)pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr;
 
-  for (;pres != NULL;pres = (resource *)GET_NEXT(pres->rs_link))
+  if (resources != NULL)
     {
-    assert(pres->rs_defin != NULL);
-
-    pname = pres->rs_defin->rs_name;
-
-    assert(pname != NULL);
-    assert(*pname != '\0');
-
-    if ((igncput == FALSE) && (strcmp(pname, "cput") == 0))
+    for (size_t i = 0; i < resources->size(); i++)
       {
-      retval = mm_gettime(pres, &value);
+      resource &r = resources->at(i);
 
-      if (retval != PBSE_NONE)
-        continue;
+      assert(r.rs_defin != NULL);
 
-      if ((num = cput_sum(pjob)) > value)
+      pname = r.rs_defin->rs_name;
+
+      assert(pname != NULL);
+      assert(*pname != '\0');
+
+      if ((igncput == FALSE) && (strcmp(pname, "cput") == 0))
         {
-        sprintf(log_buffer, "cput %lu exceeded limit %lu",
-                num,
-                value);
+        retval = mm_gettime(&r, &value);
 
-        return(JOB_EXEC_OVERLIMIT_CPUT);
+        if (retval != PBSE_NONE)
+          continue;
+
+        if ((num = cput_sum(pjob)) > value)
+          {
+          sprintf(log_buffer, "cput %lu exceeded limit %lu",
+                  num,
+                  value);
+
+          return(JOB_EXEC_OVERLIMIT_CPUT);
+          }
         }
-      }
-    else if ((igncput == FALSE) && (strcmp(pname, "pcput") == 0))
-      {
-      retval = mm_gettime(pres, &value);
-
-      if (retval != PBSE_NONE)
-        continue;
-
-      if (overcpu_proc(pjob, value))
+      else if ((igncput == FALSE) && (strcmp(pname, "pcput") == 0))
         {
-        sprintf(log_buffer, "pcput exceeded limit %lu",
-                value);
+        retval = mm_gettime(&r, &value);
 
-        return(JOB_EXEC_OVERLIMIT_CPUT);
+        if (retval != PBSE_NONE)
+          continue;
+
+        if (overcpu_proc(pjob, value))
+          {
+          sprintf(log_buffer, "pcput exceeded limit %lu",
+                  value);
+
+          return(JOB_EXEC_OVERLIMIT_CPUT);
+          }
         }
-      }
-    else if (strcmp(pname, "vmem") == 0)
-      {
-      retval = mm_getsize(pres, &value);
-
-      if (retval != PBSE_NONE)
-        continue;
-
-      if ((ignvmem == 0) && ((numll = mem_sum(pjob)) > value))
+      else if (strcmp(pname, "vmem") == 0)
         {
-        sprintf(log_buffer, "vmem %llu exceeded limit %lu",
-                numll,
-                value);
+        retval = mm_getsize(&r, &value);
 
-        return(JOB_EXEC_OVERLIMIT_MEM);
+        if (retval != PBSE_NONE)
+          continue;
+
+        if ((ignvmem == 0) && ((numll = mem_sum(pjob)) > value))
+          {
+          sprintf(log_buffer, "vmem %llu exceeded limit %lu",
+                  numll,
+                  value);
+
+          return(JOB_EXEC_OVERLIMIT_MEM);
+          }
         }
-      }
-    else if (strcmp(pname, "pvmem") == 0)
-      {
-      unsigned long long valuell;
-
-      retval = mm_getsize(pres, &value);
-
-      if (retval != PBSE_NONE)
-        continue;
-
-      valuell = (unsigned long long)value;
-
-      if ((ignvmem == 0) && (overmem_proc(pjob, valuell)))
+      else if (strcmp(pname, "pvmem") == 0)
         {
-        sprintf(log_buffer, "pvmem exceeded limit %llu",
-                valuell);
+        unsigned long long valuell;
 
-        return(JOB_EXEC_OVERLIMIT_MEM);
+        retval = mm_getsize(&r, &value);
+
+        if (retval != PBSE_NONE)
+          continue;
+
+        valuell = (unsigned long long)value;
+
+        if ((ignvmem == 0) && (overmem_proc(pjob, valuell)))
+          {
+          sprintf(log_buffer, "pvmem exceeded limit %llu",
+                  valuell);
+
+          return(JOB_EXEC_OVERLIMIT_MEM);
+          }
         }
-      }
-    else if (ignwalltime == 0 && strcmp(pname, "walltime") == 0)
-      {
-
-      /* no need to check walltime on sisters, MS will get it */
-      if (am_i_mother_superior(*pjob) == false)
-        continue;
-
-      retval = mm_gettime(pres, &value);
-
-      if (retval != PBSE_NONE)
-        continue;
-
-      num = (unsigned long)((double)(time_now - pjob->ji_qs.ji_stime) *
-                            wallfactor);
-
-      if (num > value)
+      else if (ignwalltime == 0 && strcmp(pname, "walltime") == 0)
         {
-        sprintf(log_buffer, "walltime %ld exceeded limit %ld",
-                num,
-                value);
 
-        return(JOB_EXEC_OVERLIMIT_WT);
+        /* no need to check walltime on sisters, MS will get it */
+        if (am_i_mother_superior(*pjob) == false)
+          continue;
+
+        retval = mm_gettime(&r, &value);
+
+        if (retval != PBSE_NONE)
+          continue;
+
+        num = (unsigned long)((double)(time_now - pjob->ji_qs.ji_stime) *
+                              wallfactor);
+
+        if (num > value)
+          {
+          sprintf(log_buffer, "walltime %ld exceeded limit %ld",
+                  num,
+                  value);
+
+          return(JOB_EXEC_OVERLIMIT_WT);
+          }
         }
-      }
-    }  /* END for (pres) */
+      }  /* END for each resource */
+    }
 
 #ifdef PENABLE_LINUX26_CPUSETS
   /* Check memory_pressure */
@@ -2492,8 +2726,6 @@ int mom_over_limit(
 
 
 
-
-
 /*
  * job_expected_resc_found: logs an error if an expected resource was not found
  */
@@ -2517,6 +2749,36 @@ int job_expected_resc_found(
 
 
 
+#ifdef USE_RESOURCE_PLUGIN
+/*
+ * add_plugin_job_resource_usage()
+ *
+ * Calls the resource plugin to add arbitrary job resource usage information
+ *
+ * @param pjob - the job whose resource usage information we're adding
+ */
+
+void add_plugin_job_resource_usage(
+    
+  job *pjob)
+
+  {
+  static const int job_resource_alarm_seconds = 3;
+  std::string jid(pjob->ji_qs.ji_jobid);
+  std::set<pid_t> job_pids(*pjob->ji_job_pid_set);
+  
+  if (LOGLEVEL >= 3)
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_MOM, __func__, "Executing the job usage plugin");
+
+  alarm(job_resource_alarm_seconds);
+  report_job_resources(jid, job_pids, *pjob->ji_custom_usage_info);
+  alarm(0);
+
+  if (LOGLEVEL >= 3)
+    log_event(PBSEVENT_SYSTEM, PBS_EVENTCLASS_MOM, __func__,
+      "Finished executing the job usage plugin");
+  }
+#endif
 
 
 /*
@@ -2568,7 +2830,9 @@ int mom_set_use(
 
   if ((at->at_flags & ATR_VFLAG_SET) == 0)
     {
-    /* initialize usage structures */
+    /* This is the first time mom_set_use 
+     * has been called for this job.
+     * initialize usage structures */
 
     at->at_flags |= ATR_VFLAG_SET;
 
@@ -2629,9 +2893,9 @@ int mom_set_use(
   pres = find_resc_entry(at, rd);
 
   if (job_expected_resc_found(pres, rd, pjob->ji_qs.ji_jobid))
-	return -1;
+    return -1;
 
-  lp = (unsigned long *) & pres->rs_value.at_val.at_long;
+  lp = (unsigned long *) &pres->rs_value.at_val.at_long;
 
   lnum = cput_sum(pjob);
 
@@ -2658,7 +2922,7 @@ int mom_set_use(
   pres = find_resc_entry(at, rd);
 
   if (job_expected_resc_found(pres, rd, pjob->ji_qs.ji_jobid))
-	return -1;
+    return -1;
 
   lp = &pres->rs_value.at_val.at_size.atsv_num;
 
@@ -2675,7 +2939,7 @@ int mom_set_use(
   pres = find_resc_entry(at, rd);
 
   if (job_expected_resc_found(pres, rd, pjob->ji_qs.ji_jobid))
-	return -1;
+    return -1;
 
   /* NOTE: starting jobs can come through here before stime is recorded */
   if (pjob->ji_qs.ji_stime == 0)
@@ -2693,7 +2957,7 @@ int mom_set_use(
   pres = find_resc_entry(at, rd);
 
   if (job_expected_resc_found(pres, rd, pjob->ji_qs.ji_jobid))
-	return -1;
+    return -1;
 
   lp = &pres->rs_value.at_val.at_size.atsv_num;
 
@@ -2725,6 +2989,10 @@ int mom_set_use(
     }
 #endif
 
+#ifdef USE_RESOURCE_PLUGIN
+  add_plugin_job_resource_usage(pjob);
+#endif
+
   return(PBSE_NONE);
   }  /* END mom_set_use() */
 
@@ -2746,6 +3014,7 @@ int mom_set_use(
 
 int kill_task(
 
+  job  *pjob,   /* I */
   task *ptask,  /* I */
   int   sig,    /* I */
   int   pg)     /* I (1=signal process group, 0=signal master process only) */
@@ -2800,7 +3069,7 @@ int kill_task(
   do
     {
     ctThisIteration = 0;
-    
+
     /* NOTE:  do not use cached proc-buffer since we need up-to-date info */
 #ifdef PENABLE_LINUX26_CPUSETS
 
@@ -2808,7 +3077,7 @@ int kill_task(
      * collect stats of processes running in and below the Torque cpuset, only
      * This relies on reliable process starters for MPI, which bind their tasks
      * to the cpuset of the job. */
- 
+
 #ifdef USELIBCPUSET
     pids = get_cpuset_pidlist(TTORQUECPUSET_BASE, pids);
 #else
@@ -2847,13 +3116,13 @@ int kill_task(
 
         continue;
         }
-      
+
       if ((sesid == ps->session) ||
           (ProcIsChild(procfs,pid,ptask->ti_qs.ti_parentjobid) == TRUE))
-        
+
         {
         NumProcessesFound++;
-        
+
         if ((ps->state == 'Z') ||
             (ps->pid == 0))
           {
@@ -2862,16 +3131,16 @@ int kill_task(
            * which to kill(2) means 'every process in the process
            * group of the current process'.
            */
-          
+
           sprintf(log_buffer, "%s: not killing process (pid=%d/state=%c) with sig %d",
             __func__, ps->pid, ps->state, sig);
-          
+
           log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
           }  /* END if ((ps->state == 'Z') || (ps->pid == 0)) */
         else
           {
           int i = 0;
-          
+
           if (ps->pid == mompid)
             {
             /*
@@ -2881,41 +3150,57 @@ int kill_task(
              * session id.  We check this to make sure MOM doesn't kill
              * herself.
              */
-    
+
             if (LOGLEVEL >= 3)
               {
               sprintf(log_buffer, "%s: not killing process %d. Avoid sending signal because child task still has MOM's session id", __func__, ps->pid);
-              
+
               log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
               }
-            
+
             if ((sig == SIGKILL) ||
                 (sig == SIGTERM))
               {
               ++ctThisIteration; //Ultimately this is  task that will need to be killed.
               }
-            
+
             continue;
             }  /* END if (ps->pid == mompid) */
-          
-          if ((sig == SIGKILL) || 
-              (sig == SIGTERM))
-            {
-            ++ctThisIteration; //Only count for killing don't count for any other signal.
-            }
-    
+
           if (sig == SIGKILL)
             {
-            sprintf(log_buffer, "%s: killing pid %d task %d gracefully with sig %d",
-              __func__, ps->pid, ptask->ti_qs.ti_task, SIGTERM);
-            
-            log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
-            
             if (pg == 0)
-              kill(ps->pid, SIGTERM);
-            else
-              killpg(ps->pid, SIGTERM);
+              {
+              /* make sure we only send a SIGTERM one time per process */
+              if ((ps->state != 'Z') &&
+                  (pjob->ji_sigtermed_processes->find(pid) == pjob->ji_sigtermed_processes->end()))
+                {
+                sprintf(log_buffer, "%s: killing pid %d task %d gracefully with sig %d",
+                  __func__, ps->pid, ptask->ti_qs.ti_task, SIGTERM);
+                
+                log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB,
+                    ptask->ti_qs.ti_parentjobid, log_buffer);
             
+                kill(ps->pid, SIGTERM);
+                pjob->ji_sigtermed_processes->insert(ps->pid);
+                }
+              }
+            else
+              {
+              if ((ps->state != 'Z') &&
+                  (pjob->ji_sigtermed_processes->find(pid) == pjob->ji_sigtermed_processes->end()))
+                {
+                sprintf(log_buffer, "%s: killing pid %d task %d gracefully with sig %d",
+                  __func__, ps->pid, ptask->ti_qs.ti_task, SIGTERM);
+                
+                log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB,
+                    ptask->ti_qs.ti_parentjobid, log_buffer);
+            
+                killpg(ps->pid, SIGTERM);
+                pjob->ji_sigtermed_processes->insert(ps->pid);
+                }
+              }
+
             for (i = 0;i < 20;i++)
               {
               /* check if process is gone */
@@ -2927,29 +3212,29 @@ int kill_task(
                 {
                 sprintf(log_buffer, "%s: process (pid=%d/state=%c) after sig %d",
                   __func__, ps->pid, ps->state, SIGTERM);
-      
+
                 log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
-      
+
                 if (ps->state == 'Z')
                   break;
                 }
-              
+
               /* try to kill again */
               if (kill(ps->pid, 0) == -1)
                 break;
-              
+
               }  /* END for (i = 0) */
             }    /* END if (sig == SIGKILL) */
           else
             {
             i = 20;
             }
-          
+
           if (i >= 20)
             {
             /* NOTE: handle race-condition where process goes zombie as a result
              * of previous SIGTERM */
-            
+
             /* update proc info from /proc/<PID>/stat */
             if ((ps = get_proc_stat(ps->pid)) != NULL)
               {
@@ -2960,30 +3245,53 @@ int kill_task(
                  * which to kill(2) means 'every process in the process
                  * group of the current process'.
                  */
-      
+
                 sprintf(log_buffer, "%s: not killing process (pid=%d/state=%c) with sig %d",
                   __func__, ps->pid, ps->state, sig);
-                
+
                 log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB,	ptask->ti_qs.ti_parentjobid, log_buffer);
                 }  /* END if ((ps->state == 'Z') || (ps->pid == 0)) */
               else
                 {
                 /* kill process hard */
-                
+
                 /* why is this not killing with SIGKILL? */
                 sprintf(log_buffer, "%s: killing pid %d task %d with sig %d",
                   __func__, ps->pid, ptask->ti_qs.ti_task, sig);
-                
-                log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
-                
+
                 if (pg == 0)
-                  kill(ps->pid, sig);
+                  {
+                  if (sig != SIGTERM)
+                    {
+                    log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
+                    kill(ps->pid, sig);
+                    }
+                  /* make sure we only send a SIGTERM one time */
+                  else if (pjob->ji_sigtermed_processes->find(ps->pid) == pjob->ji_sigtermed_processes->end())
+                    {
+                    log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
+                    killpg(ps->pid, SIGTERM);
+                    pjob->ji_sigtermed_processes->insert(ps->pid);
+                    }
+                  }
                 else
-                  killpg(ps->pid, sig);
+                  {
+                  if (sig != SIGTERM)
+                    {
+                    log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
+                    killpg(ps->pid, sig);
+                    }
+                  else if (pjob->ji_sigtermed_processes->find(ps->pid) == pjob->ji_sigtermed_processes->end())
+                    {
+                    log_record(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, ptask->ti_qs.ti_parentjobid, log_buffer);
+                    killpg(ps->pid, SIGTERM);
+                    pjob->ji_sigtermed_processes->insert(ps->pid);
+                    }
+                  }
                 }
               }    /* END if ((ps = get_proc_stat(ps->pid)) != NULL) */
             }      /* END if (i >= 20) */
-          
+
           ++ct;
           }  /* END else ((ps->state == 'Z') || (ps->pid == 0)) */
         }    /* END if (sesid == ps->session) */
@@ -3001,7 +3309,7 @@ int kill_task(
       {
       ctCleanIterations=0;
       }
-    } while ((ctCleanIterations <= 5) && (loopCt++ < 20));
+    } while ((ctCleanIterations <= 3) && (loopCt++ < 20));
 
   /* NOTE:  to fix bad state situations resulting from a hard crash, the logic
             below should be triggered any time no processes are found (NYI) */
@@ -3023,7 +3331,7 @@ int kill_task(
 
     task_save(ptask);
 
-    sprintf(log_buffer, 
+    sprintf(log_buffer,
       "%s: job %s adopted task %d was marked as terminated because task's PID was no longer found, sid=%d",
       __func__,
       ptask->ti_qs.ti_parentjobid,
@@ -3462,7 +3770,7 @@ static char *resi_job(
 
   {
   int                 i;
-  int                 found = 0; 
+  int                 found = 0;
   unsigned long long  resisize;
   proc_stat_t        *ps;
 #ifdef USELIBMEMACCT
@@ -3553,9 +3861,9 @@ static char *resi_proc(
     }
 
 #ifdef USELIBMEMACCT
-  
+
   /* Ask memacctd for weighted rss of pid, use this instead of ps->rss */
- 
+
   if ((w_rss = get_memacct_resi(ps->pid)) == -1)
     sprintf(ret_string, "%llukb", (ps->rss * (unsigned long long)pagesize) >> 10);
   else
@@ -3639,7 +3947,6 @@ const char *sessions(
 #ifdef NUMA_SUPPORT
   char               mom_check_name[PBS_MAXSERVERNAME];
   job               *pjob;
-  task              *ptask;
 #else
   proc_stat_t       *ps;
   struct pidl       *sids  = NULL, *sl = NULL, *sp;
@@ -3671,20 +3978,22 @@ const char *sessions(
   s = ret_string;
 
   /* Walk through job list, look for jobs running on this NUMA node */
+  std::list<job *>::iterator iter;
 
-  for (pjob = (job *)GET_NEXT(svr_alljobs);
-       pjob != NULL;
-       pjob = (job *)GET_NEXT(pjob->ji_alljobs))
+  // get a list of jobs in start time order, first to last
+  for (iter = alljobs_list.begin(); iter != alljobs_list.end(); iter++)
     {
+    pjob = *iter;
+
     if (strstr(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str, mom_check_name) == NULL)
       continue;
 
     /* Show all tasks registered for this job */
 
-    for (ptask = (task *)GET_NEXT(pjob->ji_tasks);
-         ptask != NULL;
-         ptask = (task *)GET_NEXT(ptask->ti_jobtask))
+    for (unsigned int i = 0; i < pjob->ji_tasks->size(); i++)
       {
+      task *ptask = pjob->ji_tasks->at(i);
+
       if (ptask->ti_qs.ti_status != TI_STATE_RUNNING)
         continue;
 
@@ -3706,7 +4015,7 @@ const char *sessions(
       s += strlen(s);
       nsids++;
 
-      } /* END for(ptask) */
+      } /* END for each task */
 
     } /* END for(pjob) */
 
@@ -3973,11 +4282,13 @@ const char *nusers(
   sprintf(mom_check_name + strlen(mom_check_name), "-%d/", numa_index);
 
   /* Walk through job list, look for jobs running on this NUMA node */
+  std::list<job *>::iterator iter;
 
-  for (pjob = (job *)GET_NEXT(svr_alljobs);
-       pjob != NULL;
-       pjob = (job *)GET_NEXT(pjob->ji_alljobs))
+  // get a list of jobs in start time order, first to last
+  for (iter = alljobs_list.begin(); iter != alljobs_list.end(); iter++)
     {
+    pjob = *iter;
+
     if (strstr(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str, mom_check_name) == NULL)
       continue;
 
@@ -4235,7 +4546,7 @@ const char *ncpus(
  */
 
 int find_file(
-    
+
   const char *path,
   const char *filename)
 
@@ -4261,7 +4572,7 @@ int find_file(
     buf = token;
     buf += "/";
     buf += filename;
-        
+
     rc = stat(buf.c_str(), &statBuf);
     if (rc == 0)
       {
@@ -4269,7 +4580,7 @@ int find_file(
       return(TRUE);
       }
     }
-      
+
   free(malloc_str);
 
   return(FALSE);
@@ -4545,38 +4856,41 @@ void scan_non_child_tasks(void)
   {
   job *pJob;
   static int first_time = TRUE;
+  int log_drift_event = 0;
 
   DIR *pdir;  /* use local pdir to prevent race conditions associated w/global pdir (VPAC) */
 
   pdir = opendir(procfs);
+  std::list<job *>::iterator iter;
 
-  for (pJob = (job *)(GET_NEXT(svr_alljobs));
-      pJob != (job *)NULL;pJob = (job *)(GET_NEXT(pJob->ji_alljobs)))
+  // get a list of jobs in start time order, first to last
+  for (iter = alljobs_list.begin(); iter != alljobs_list.end(); iter++)
     {
-    task *pTask;
+    pJob = *iter;
 
     long job_start_time = 0;
     long job_session_id = 0;
     long session_start_time = 0;
     proc_stat_t *ps = NULL;
-    if(pJob->ji_wattr[JOB_ATR_system_start_time].at_flags&ATR_VFLAG_SET)
+    if (pJob->ji_wattr[JOB_ATR_system_start_time].at_flags&ATR_VFLAG_SET)
       {
       job_start_time = pJob->ji_wattr[JOB_ATR_system_start_time].at_val.at_long;
       }
-    if(pJob->ji_wattr[JOB_ATR_session_id].at_flags&ATR_VFLAG_SET)
+
+    if (pJob->ji_wattr[JOB_ATR_session_id].at_flags&ATR_VFLAG_SET)
       {
       job_session_id = pJob->ji_wattr[JOB_ATR_session_id].at_val.at_long;
       }
-    if((ps = get_proc_stat(job_session_id)) != NULL)
+
+    if ((ps = get_proc_stat(job_session_id)) != NULL)
       {
       session_start_time = (long)ps->start_time;
       }
 
-
-    for (pTask = (task *)(GET_NEXT(pJob->ji_tasks));
-        pTask != NULL;
-         pTask = (task *)(GET_NEXT(pTask->ti_jobtask)))
+    for (unsigned int i = 0; i < pJob->ji_tasks->size(); i++)
       {
+      task *pTask = pJob->ji_tasks->at(i);
+
 #ifdef PENABLE_LINUX26_CPUSETS
       struct pidl   *pids = NULL;
       struct pidl   *pp;
@@ -4590,9 +4904,10 @@ void scan_non_child_tasks(void)
        * Check for tasks that were exiting when mom went down, set back to
        * running so we can reprocess them and send the obit
        */
-      if ((first_time) && (pTask->ti_qs.ti_sid != 0) &&
-         ((pTask->ti_qs.ti_status == TI_STATE_EXITED) ||
-         (pTask->ti_qs.ti_status == TI_STATE_DEAD)))
+      if ((first_time) &&
+          (pTask->ti_qs.ti_sid != 0) &&
+          ((pTask->ti_qs.ti_status == TI_STATE_EXITED) ||
+           (pTask->ti_qs.ti_status == TI_STATE_DEAD)))
         {
 
         if (LOGLEVEL >= 7)
@@ -4603,6 +4918,7 @@ void scan_non_child_tasks(void)
 
           log_event(PBSEVENT_DEBUG, PBS_EVENTCLASS_JOB, pJob->ji_qs.ji_jobid, log_buffer);
           }
+
         pTask->ti_qs.ti_status = TI_STATE_RUNNING;
         }
 
@@ -4622,9 +4938,17 @@ void scan_non_child_tasks(void)
         if((job_start_time != 0)&&
             (session_start_time != 0))
           {
-          if(job_start_time == session_start_time)
+          if(labs(job_start_time - session_start_time) < 3600)
             {
             found = 1;
+            if(job_start_time != session_start_time)
+              {
+              log_drift_event = 1;
+              }
+            }
+          else
+            {
+            log_drift_event = 1;
             }
           }
         else
@@ -4648,7 +4972,7 @@ void scan_non_child_tasks(void)
           if ((pdir = opendir(procfs)) == NULL)
             return;
           }
-          
+
         rewinddir(pdir);
 
         while ((dent = readdir(pdir)) != NULL)
@@ -4666,9 +4990,11 @@ void scan_non_child_tasks(void)
             if(pJob->ji_wattr[JOB_ATR_system_start_time].at_flags&ATR_VFLAG_SET)
               {
               proc_stat_t *ts = get_proc_stat(ps->session);
-              if(ts == NULL)
+              long         job_start_time = pJob->ji_wattr[JOB_ATR_system_start_time].at_val.at_long;
+              if (ts == NULL)
                 continue;
-              if(ts->start_time == (unsigned long)pJob->ji_wattr[JOB_ATR_system_start_time].at_val.at_long)
+
+              if (abs((long)ts->start_time - job_start_time) < 3600)
                 {
                 found = 1;
                 break;
@@ -4722,7 +5048,19 @@ void scan_non_child_tasks(void)
         exiting_tasks = 1;
         }
       }
-    }    /* END for (job = GET_NEXT(svr_alljobs)) */
+      
+      if ((log_drift_event) && 
+          (LOGLEVEL >= 7))
+        {
+        sprintf(log_buffer, "DRIFT debug: comparing linux_time %u; job_start_time %ld and session_start_time[%ld] %ld: difference %d",
+          linux_time,
+          job_start_time,
+          job_session_id,
+          session_start_time,
+          (int)abs(job_start_time - session_start_time));
+        log_event(PBSEVENT_DEBUG, PBS_EVENTCLASS_JOB, pJob->ji_qs.ji_jobid, log_buffer);
+        }
+    } /* END for each job */
 
   if (pdir != NULL)
     closedir(pdir);
@@ -4976,7 +5314,7 @@ int get_la(
  * The activity of a cpu is calculated from the content of /proc/stat like done
  * by top and related tools.
  */
- 
+
 void collect_cpuact(void)
   {
   FILE  *fp;
@@ -5013,7 +5351,7 @@ void collect_cpuact(void)
 
     sprintf(log_buffer, "system contains %ld CPUs", system_ncpus);
     log_record(PBSEVENT_SYSTEM, 0, __func__, log_buffer);
-  
+
     if (system_ncpus)
       {
       if ((cpu_array = (proc_cpu_t *)calloc(system_ncpus, sizeof(proc_cpu_t))) == NULL)
@@ -5035,10 +5373,10 @@ void collect_cpuact(void)
       if (fscanf(fp, "%s", label) != 1)
         /* Format error */
         break;
-                  
+
       if (sscanf(label, "cpu%d", &cpu_id) != 1)
         /* Line does not report cpu activities */
-        continue; 
+        continue;
 
       if (cpu_id >= system_ncpus)
         /* Ups, more cpus than found in /proc/cpuinfo */
@@ -5047,7 +5385,7 @@ void collect_cpuact(void)
       if (fscanf(fp, " %llu %llu %llu %llu %llu", &usr, &nice, &sys, &idle, &wait) != 5)
         /* Format error */
         break;
- 
+
       cpu_array[cpu_id].idle_total = idle;
       cpu_array[cpu_id].busy_total = usr + nice + sys + wait;
 
@@ -5058,7 +5396,7 @@ void collect_cpuact(void)
   /* Calculate cpu activity for each nodeboard */
   for (i = 0; i < num_node_boards; i++)
     {
-    
+
     /* Sum up cpu counters of relevant CPUs */
     totidle = totbusy = 0;
     hwloc_bitmap_foreach_begin(cpu_id, node_boards[i].cpuset)
@@ -5067,7 +5405,7 @@ void collect_cpuact(void)
       totbusy += cpu_array[cpu_id].busy_total;
       }
     hwloc_bitmap_foreach_end();
-    
+
     /* If there are counters from a previous call, evaluate */
     if ((prevtot = node_boards[i].pstat_idle + node_boards[i].pstat_busy) != 0)
       {
@@ -5096,7 +5434,7 @@ void collect_cpuact(void)
 const char *cpuact(
 
   struct rm_attribute *attrib)
-  
+
   {
   if (attrib != NULL)
     {
@@ -5335,7 +5673,8 @@ static const char *quota(
 
   if ((uid = (uid_t)atoi(attrib->a_value)) == 0)
     {
-    if ((pw = getpwnam_ext(attrib->a_value)) == NULL)
+    char *buf;
+    if ((pw = getpwnam_ext(&buf, attrib->a_value)) == NULL)
       {
       sprintf(log_buffer,
               "user not found: %s", attrib->a_value);
@@ -5345,6 +5684,7 @@ static const char *quota(
       }
 
     uid = pw->pw_uid;
+    free_pwnam(pw, buf);
     }
 
   if (syscall(
@@ -5547,5 +5887,3 @@ mbool_t ProcIsChild(
   }  /* END ProcIsChild() */
 
 /* END mom_mach.c */
-
-

@@ -99,15 +99,16 @@
 #include "server_limits.h"
 #include "list_link.h"
 #include "attribute.h"
-#include "server.h"
 
 /* private data */
 
-static long  log_event_lvl_priv = PBSEVENT_ERROR    | PBSEVENT_SYSTEM   |
-                                  PBSEVENT_ADMIN    | PBSEVENT_JOB      |
+
+static long  log_event_lvl_priv = PBSEVENT_ERROR     | PBSEVENT_SYSTEM   |
+                                  PBSEVENT_ADMIN     | PBSEVENT_JOB      |
                                   PBSEVENT_JOB_USAGE | PBSEVENT_SECURITY |
-                                  PBSEVENT_SCHED    |
-                                  PBSEVENT_DEBUG    | PBSEVENT_DEBUG2;
+                                  PBSEVENT_SCHED     | PBSEVENT_DEBUG    |
+                                  PBSEVENT_DEBUG2    | PBSEVENT_CLIENTAUTH |
+                                  PBSEVENT_SYSLOG;
 
 /* external global data */
 

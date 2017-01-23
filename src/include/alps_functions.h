@@ -84,6 +84,7 @@
 #include <libxml/tree.h>
 #include <string>
 #include <vector>
+#include <map>
 
 
 extern const char *alps_reporter_feature;
@@ -92,7 +93,7 @@ std::string get_frequency_request(struct cpu_frequency_value *pfreq);
 
 int generate_alps_status(std::vector<std::string> &status, const char *apbasil_path, const char *apbasil_protocol);
 
-int process_alps_status(char *nd_name, std::vector<std::string> &status);
+int process_alps_status(const char *nd_name, std::vector<std::string> &status);
 
 int get_alps_statuses(struct pbsnode *parent, struct batch_request *preq, int *bad, tlist_head *pstathd);
 
@@ -103,3 +104,43 @@ int create_alps_reservation(char *exec_hosts, char *username, char *jobid, char 
 int find_error_type(xmlNode *node);
 
 struct pbsnode *create_alps_subnode(struct pbsnode *parent, const char *node_id);
+
+class alps_accelerator_info
+  {
+  public:
+  std::string accel_id;
+  std::string accel_state;
+  std::string family;
+  std::string memory;
+  std::string clock_mhz;
+
+  void add_to_status(std::vector<std::string> &status);
+  };
+
+class alps_node_info
+  {
+  public:
+  std::string node_header;
+  std::string availmem;
+  std::string state;
+  std::string os;
+  std::string physmem;
+  std::string totmem;
+  std::string cmem;
+  std::string aproc;
+  std::string cproc;
+  std::string ccu;
+  std::string name;
+  std::string arch;
+  std::string node_index;
+  std::string hbm;        // Not always populated
+  std::string rsv;        // Not always populated
+  std::string features;   // Not always populated
+  std::string numa_nodes; // Not always populated
+  std::string socket;     // Not always populated
+  std::vector<alps_accelerator_info> accelerators;
+
+  void add_to_status(std::vector<std::string> &status);
+  };
+
+extern std::map<int, alps_node_info> alps_nodes;

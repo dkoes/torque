@@ -94,6 +94,7 @@
 #include "resmon.h"
 #include "cmds.h"
 #include "rm.h"
+#include "lib_ifl.h"
 
 extern void site_cmds(Tcl_Interp *);
 
@@ -111,14 +112,6 @@ struct batch_status *pbs_statjob_err(int c, char *id, struct attrl *attrib, char
 struct batch_status *pbs_selstat_err(int c, struct attropl *attrib, char *extend, int *local_errno);
 struct batch_status *pbs_statnode_err(int c, char *id, struct attrl *attrib, char *extend, int *local_errno);
 struct batch_status *pbs_statque_err(int c, char *id, struct attrl *attrib, char *extend, int *local_errno);
-int pbs_rerunjob_err(int c, char *jobid, char *extend, int *local_errno);
-int pbs_movejob_err(int c, char *jobid, char *destin, char *extend, int *local_errno);
-int pbs_asyrunjob_err(int c, char *jobid, char *location, char *extend, int *local_errno);
-int pbs_runjob_err(int c, char *jobid, char *location, char *extend, int *rc);
-int pbs_deljob_err(int c, char *jobid, char *extend, int *local_errno);
-int pbs_holdjob_err(int c, char *jobid, char *holdtype, char *extend, int *local_errno);
-int pbs_manager_err(int c, int command, int objtype, char *objname, struct attropl *attrib, char *extend, int *local_errno);
-int pbs_alterjob_err(int c, char *jobid, struct attrl *attrib, char *extend, int *local_errno);
 
 #define SET_PBSERR(value) \
   (void)Tcl_ObjSetVar2(interp, pbserr, NULL, \
@@ -935,7 +928,7 @@ int PBS_ReRun(
 
   if (argc != 2)
     {
-    sprintf(interp->result,
+    sprintf((char *)Tcl_GetStringResult(interp),
             "%s: wrong # args: job_id", argv[0]);
     return TCL_ERROR;
     }
@@ -946,12 +939,14 @@ int PBS_ReRun(
     SET_PBSERR(PBSE_NOSERVER);
     return TCL_OK;
     }
-
-  interp->result = strdup("0");
+  
+  sprintf(log_buffer, "0");
+  Tcl_SetResult(interp, log_buffer, TCL_VOLATILE);
 
   if (pbs_rerunjob_err(connector, strdup(argv[1]), extend, &local_errno))
     {
-    interp->result = strdup("-1");
+    sprintf(log_buffer, "-1");
+    Tcl_SetResult(interp, log_buffer, TCL_VOLATILE);
     msg = pbs_geterrmsg(connector);
     sprintf(log_buffer, "%s (%d)", msg ? msg : fail, local_errno);
     log_err(-1, argv[0], log_buffer);

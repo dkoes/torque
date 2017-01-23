@@ -8,7 +8,7 @@ dnl
 dnl
 dnl Configuration and build system for PBS written
 dnl  by Lonhyn T. Jasinskyj (lonhyn@nas.nasa.gov)
-dnl 
+dnl
 dnl (credit for the inspiration for some of this is due to the work of
 dnl  Martin Buchholz who autoconf'ed XEmacs)
 dnl
@@ -23,6 +23,9 @@ dnl Added --enable-libcpuset to use the cpuset API from libcpuset when --enable-
 dnl Added --enable-memacct to enable pbs_mom to get rss values that are more reliable
 dnl Added requirement for libhwloc when --enable-cpuset or --enable-numa-support
 dnl   Bernd Kallies (kallies@zib.de)
+dnl
+dnl Added --enable-cgroups. If cgroups are enabled cpusets will be disabled.
+dnl    Ken Nielson (knielson@adaptivecomputing.com)
 dnl
 dnl Expanded to allow unit testing via Check
 dnl Updated to use m4
@@ -93,11 +96,11 @@ fi
 
 if test "X$success" == "X0" ; then
   success=`echo $githash > current_hash`
-  AC_DEFINE_UNQUOTED(GIT_HASH, ["$githash"], [repository svn version])
+  AC_DEFINE_UNQUOTED(GIT_HASH, ["$githash"], [repository git version])
 else
   dnl current hash is a file checked in to the git repo in the base directory
   dnl containing the most recent hash
-  AC_DEFINE_UNQUOTED(GIT_HASH, ["`cat current_hash`"], [repository svn version])
+  AC_DEFINE_UNQUOTED(GIT_HASH, ["`cat current_hash`"], [repository git version])
 fi
 
 PKG_PROG_PKG_CONFIG
@@ -135,7 +138,7 @@ dnl  ######################################################################
 dnl  add unit testing if check is installed
 AC_ARG_WITH(check,
    [AS_HELP_STRING([--with-check], [Enable unit testing (check package default=no)])], [have_check=yes], [have_check=no])
- 
+
 AS_IF([test x"$have_check" = "xyes"], [
   PKG_CHECK_MODULES([CHECK], [check >= 0.9.4], [check_installed="yes"], [check_installed="no"])
   AS_IF([test x"$check_installed" = "xno"], [
@@ -149,359 +152,366 @@ m4_ifdef([AM_SILENT_RULES],[
     AM_SILENT_RULES(no)
     AC_CONFIG_FILES(src/test/scaffold_fail/Makefile
     src/test/torque_test_lib/Makefile
-    src/cmds/test/Makefile
-    src/cmds/test/MXML/Makefile
-    src/cmds/test/common_cmds/Makefile
-    src/cmds/test/pbs_track/Makefile
-    src/cmds/test/pbsdsh/Makefile
-    src/cmds/test/pbsnodes/Makefile
-    src/cmds/test/pbspd/Makefile
-    src/cmds/test/pbspoe/Makefile
-    src/cmds/test/qalter/Makefile
-    src/cmds/test/qchkpt/Makefile
-    src/cmds/test/qdel/Makefile
-    src/cmds/test/qdisable/Makefile
-    src/cmds/test/qenable/Makefile
-    src/cmds/test/qgpumode/Makefile
-    src/cmds/test/qgpureset/Makefile
-    src/cmds/test/qhold/Makefile
-    src/cmds/test/qmgr/Makefile
-    src/cmds/test/qmove/Makefile
-    src/cmds/test/qmsg/Makefile
-    src/cmds/test/qorder/Makefile
-    src/cmds/test/qrerun/Makefile
-    src/cmds/test/qrls/Makefile
-    src/cmds/test/qrun/Makefile
-    src/cmds/test/qselect/Makefile
-    src/cmds/test/qsig/Makefile
-    src/cmds/test/qstart/Makefile
-    src/cmds/test/qstat/Makefile
-    src/cmds/test/qstop/Makefile
-    src/cmds/test/qsub_functions/Makefile
-    src/cmds/test/qterm/Makefile
-    src/daemon_client/test/Makefile
-    src/daemon_client/test/trq_auth_daemon/Makefile
+    src/test/accounting/Makefile
+    src/test/acl_special/Makefile
+    src/test/array_func/Makefile
+    src/test/array_upgrade/Makefile
+    src/test/attr_recov/Makefile
+    src/test/batch_request/Makefile
+    src/test/completed_jobs_map/Makefile
+    src/test/delete_all_tracker/Makefile
+    src/test/dis_read/Makefile
+    src/test/display_alps_status/Makefile
+    src/test/execution_slot_tracker/Makefile
+    src/test/exiting_jobs/Makefile
+    src/test/geteusernam/Makefile
+    src/test/get_path_jobdata/Makefile
+    src/test/id_map/Makefile
+    src/test/incoming_request/Makefile
+    src/test/issue_request/Makefile
+    src/test/job_attr_def/Makefile
+    src/test/job/Makefile
+    src/test/job_array/Makefile
+    src/test/job_container/Makefile
+    src/test/job_func/Makefile
+    src/test/job_qs_upgrade/Makefile
+    src/test/job_recov/Makefile
+    src/test/job_recycler/Makefile
+    src/test/job_route/Makefile
+    src/test/job_usage_info/Makefile
+    src/test/login_nodes/Makefile
+    src/test/mom_hierarchy_handler/Makefile
+    src/test/mail_throttler/Makefile
+    src/test/node_func/Makefile
+    src/test/node_manager/Makefile
+    src/test/pbsnode/Makefile
+    src/test/pbsd_init/Makefile
+    src/test/pbsd_main/Makefile
+    src/test/process_alps_status/Makefile
+    src/test/process_mom_update/Makefile
+    src/test/process_request/Makefile
+    src/test/queue_func/Makefile
+    src/test/queue_recov/Makefile
+    src/test/queue_recycler/Makefile
+    src/test/reply_send/Makefile
+    src/test/receive_mom_communication/Makefile
+    src/test/req_delete/Makefile
+    src/test/req_deletearray/Makefile
+    src/test/req_getcred/Makefile
+    src/test/req_gpuctrl/Makefile
+    src/test/req_holdarray/Makefile
+    src/test/req_holdjob/Makefile
+    src/test/req_jobobit/Makefile
+    src/test/req_locate/Makefile
+    src/test/req_manager/Makefile
+    src/test/req_message/Makefile
+    src/test/req_modify/Makefile
+    src/test/req_movejob/Makefile
+    src/test/req_quejob/Makefile
+    src/test/req_register/Makefile
+    src/test/req_rerun/Makefile
+    src/test/req_rescq/Makefile
+    src/test/req_runjob/Makefile
+    src/test/req_select/Makefile
+    src/test/req_shutdown/Makefile
+    src/test/req_signal/Makefile
+    src/test/req_stat/Makefile
+    src/test/req_tokens/Makefile
+    src/test/req_track/Makefile
+    src/test/resc_def_all/Makefile
+    src/test/restricted_host/Makefile
+    src/test/run_sched/Makefile
+    src/test/stat_job/Makefile
+    src/test/svr_chk_owner/Makefile
+    src/test/svr_connect/Makefile
+    src/test/svr_format_job/Makefile
+    src/test/svr_func/Makefile
+    src/test/svr_jobfunc/Makefile
+    src/test/svr_mail/Makefile
+    src/test/svr_movejob/Makefile
+    src/test/svr_recov/Makefile
+    src/test/svr_resccost/Makefile
+    src/test/svr_task/Makefile
+    src/test/track_alps_reservations/Makefile
+    src/test/user_info/Makefile
+    src/test/req/Makefile
+    src/test/complete_req/Makefile
+    src/test/attr_fn_complete_req/Makefile
+    src/test/attr_atomic/Makefile
+    src/test/attr_fn_acl/Makefile
+    src/test/attr_fn_arst/Makefile
+    src/test/attr_fn_b/Makefile
+    src/test/attr_fn_c/Makefile
+    src/test/attr_fn_freq/Makefile
+    src/test/attr_fn_hold/Makefile
+    src/test/attr_fn_intr/Makefile
+    src/test/attr_fn_l/Makefile
+    src/test/attr_fn_ll/Makefile
+    src/test/attr_fn_nppcu/Makefile
+    src/test/attr_fn_resc/Makefile
+    src/test/attr_fn_size/Makefile
+    src/test/attr_fn_str/Makefile
+    src/test/attr_fn_time/Makefile
+    src/test/attr_fn_tokens/Makefile
+    src/test/attr_fn_tv/Makefile
+    src/test/attr_fn_unkn/Makefile
+    src/test/attr_func/Makefile
+    src/test/attr_node_func/Makefile
+    src/test/attr_str_conversion/Makefile
+    src/test/add_verify_resources/Makefile
+    src/test/ck_job_name/Makefile
+    src/test/cnt2server/Makefile
+    src/test/cvtdate/Makefile
+    src/test/get_server/Makefile
+    src/test/locate_job/Makefile
+    src/test/parse_at/Makefile
+    src/test/parse_depend/Makefile
+    src/test/parse_destid/Makefile
+    src/test/parse_equal/Makefile
+    src/test/parse_jobid/Makefile
+    src/test/parse_stage/Makefile
+    src/test/prepare_path/Makefile
+    src/test/prt_job_err/Makefile
+    src/test/set_attr/Makefile
+    src/test/set_resource/Makefile
+    src/test/csv/Makefile
+    src/test/discui_/Makefile
+    src/test/discul_/Makefile
+    src/test/disi10d_/Makefile
+    src/test/disi10l_/Makefile
+    src/test/disiui_/Makefile
+    src/test/disp10d_/Makefile
+    src/test/disp10l_/Makefile
+    src/test/disrcs/Makefile
+    src/test/disrd/Makefile
+    src/test/disrf/Makefile
+    src/test/disrfcs/Makefile
+    src/test/disrfst/Makefile
+    src/test/disrl/Makefile
+    src/test/disrl_/Makefile
+    src/test/disrsc/Makefile
+    src/test/disrsi/Makefile
+    src/test/disrsi_/Makefile
+    src/test/disrsl/Makefile
+    src/test/disrsl_/Makefile
+    src/test/disrss/Makefile
+    src/test/disrst/Makefile
+    src/test/disruc/Makefile
+    src/test/disrui/Makefile
+    src/test/disrul/Makefile
+    src/test/disrus/Makefile
+    src/test/diswcs/Makefile
+    src/test/diswf/Makefile
+    src/test/diswl_/Makefile
+    src/test/diswsi/Makefile
+    src/test/diswsl/Makefile
+    src/test/diswui/Makefile
+    src/test/diswui_/Makefile
+    src/test/diswul/Makefile
+    src/test/PBSD_gpuctrl2/Makefile
+    src/test/PBSD_manage2/Makefile
+    src/test/PBSD_manager_caps/Makefile
+    src/test/PBSD_msg2/Makefile
+    src/test/PBSD_rdrpy/Makefile
+    src/test/PBSD_sig2/Makefile
+    src/test/PBSD_status/Makefile
+    src/test/PBSD_status2/Makefile
+    src/test/PBSD_submit_caps/Makefile
+    src/test/PBS_attr/Makefile
+    src/test/dec_Authen/Makefile
+    src/test/dec_CpyFil/Makefile
+    src/test/dec_Gpu/Makefile
+    src/test/dec_JobCred/Makefile
+    src/test/dec_JobFile/Makefile
+    src/test/dec_JobId/Makefile
+    src/test/dec_JobObit/Makefile
+    src/test/dec_Manage/Makefile
+    src/test/dec_MoveJob/Makefile
+    src/test/dec_MsgJob/Makefile
+    src/test/dec_QueueJob/Makefile
+    src/test/dec_Reg/Makefile
+    src/test/dec_ReqExt/Makefile
+    src/test/dec_ReqHdr/Makefile
+    src/test/dec_Resc/Makefile
+    src/test/dec_ReturnFile/Makefile
+    src/test/dec_RunJob/Makefile
+    src/test/dec_Shut/Makefile
+    src/test/dec_Sig/Makefile
+    src/test/dec_Status/Makefile
+    src/test/dec_Track/Makefile
+    src/test/dec_attrl/Makefile
+    src/test/dec_attropl/Makefile
+    src/test/dec_rpyc/Makefile
+    src/test/dec_rpys/Makefile
+    src/test/dec_svrattrl/Makefile
+    src/test/enc_CpyFil/Makefile
+    src/test/enc_Gpu/Makefile
+    src/test/enc_JobCred/Makefile
+    src/test/enc_JobFile/Makefile
+    src/test/enc_JobId/Makefile
+    src/test/enc_JobObit/Makefile
+    src/test/enc_Manage/Makefile
+    src/test/enc_MoveJob/Makefile
+    src/test/enc_MsgJob/Makefile
+    src/test/enc_QueueJob/Makefile
+    src/test/enc_QueueJob_hash/Makefile
+    src/test/enc_Reg/Makefile
+    src/test/enc_ReqExt/Makefile
+    src/test/enc_ReqHdr/Makefile
+    src/test/enc_ReturnFile/Makefile
+    src/test/enc_RunJob/Makefile
+    src/test/enc_Shut/Makefile
+    src/test/enc_Sig/Makefile
+    src/test/enc_Status/Makefile
+    src/test/enc_Track/Makefile
+    src/test/enc_attrl/Makefile
+    src/test/enc_attropl/Makefile
+    src/test/enc_attropl_hash/Makefile
+    src/test/enc_reply/Makefile
+    src/test/enc_svrattrl/Makefile
+    src/test/get_svrport/Makefile
+    src/test/list_link/Makefile
+    src/test/nonblock/Makefile
+    src/test/pbsD_alterjo/Makefile
+    src/test/pbsD_asyrun/Makefile
+    src/test/pbsD_chkptjob/Makefile
+    src/test/pbsD_connect/Makefile
+    src/test/pbsD_deljob/Makefile
+    src/test/pbsD_gpuctrl/Makefile
+    src/test/pbsD_holdjob/Makefile
+    src/test/pbsD_locjob/Makefile
+    src/test/pbsD_manager/Makefile
+    src/test/pbsD_movejob/Makefile
+    src/test/pbsD_msgjob/Makefile
+    src/test/pbsD_orderjo/Makefile
+    src/test/pbsD_rerunjo/Makefile
+    src/test/pbsD_resc/Makefile
+    src/test/pbsD_rlsjob/Makefile
+    src/test/pbsD_runjob/Makefile
+    src/test/pbsD_selectj/Makefile
+    src/test/pbsD_sigjob/Makefile
+    src/test/pbsD_stagein/Makefile
+    src/test/pbsD_statjob/Makefile
+    src/test/pbsD_statnode/Makefile
+    src/test/pbsD_statque/Makefile
+    src/test/pbsD_statsrv/Makefile
+    src/test/pbsD_submit/Makefile
+    src/test/pbsD_submit_hash/Makefile
+    src/test/pbsD_termin/Makefile
+    src/test/pbs_geterrmg/Makefile
+    src/test/pbs_statfree/Makefile
+    src/test/tcp_dis/Makefile
+    src/test/tm/Makefile
+    src/test/torquecfg/Makefile
+    src/test/trq_auth/Makefile
+    src/test/trq_auth_daemon/Makefile
+    src/test/chk_file_sec/Makefile
+    src/test/log_event/Makefile
+    src/test/pbs_log/Makefile
+    src/test/pbs_messages/Makefile
+    src/test/setup_env/Makefile
+    src/test/conn_table/Makefile
+    src/test/get_hostaddr/Makefile
+    src/test/get_hostname/Makefile
+    src/test/md5/Makefile
+    src/test/net_client/Makefile
+    src/test/net_common/Makefile
+    src/test/net_server/Makefile
+    src/test/net_cache/Makefile
+    src/test/net_set_clse/Makefile
+    src/test/port_forwarding/Makefile
+    src/test/rm/Makefile
+    src/test/server_core/Makefile
+    src/test/site_allow_u/Makefile
+    src/test/site_alt_rte/Makefile
+    src/test/site_check_u/Makefile
+    src/test/site_map_usr/Makefile
+    src/test/site_mom_chu/Makefile
+    src/test/site_mom_ckp/Makefile
+    src/test/site_mom_jst/Makefile
+    src/test/authorized_hosts/Makefile
+    src/test/u_MXML/Makefile
+    src/test/u_groups/Makefile
+    src/test/u_hash_map_structs/Makefile
+    src/test/u_lock_ctl/Makefile
+    src/test/u_misc/Makefile
+    src/test/u_mom_hierarchy/Makefile
+    src/test/u_mu/Makefile
+    src/test/u_mutex_mgr/Makefile
+    src/test/u_putenv/Makefile
+    src/test/u_threadpool/Makefile
+    src/test/u_tree/Makefile
+    src/test/u_users/Makefile
+    src/test/u_xml/Makefile
+    src/test/MXML/Makefile
+    src/test/common_cmds/Makefile
+    src/test/pbs_track/Makefile
+    src/test/pbsdsh/Makefile
+    src/test/pbsnodes/Makefile
+    src/test/pbspd/Makefile
+    src/test/pbspoe/Makefile
+    src/test/qalter/Makefile
+    src/test/qchkpt/Makefile
+    src/test/qdel/Makefile
+    src/test/qdisable/Makefile
+    src/test/qenable/Makefile
+    src/test/qgpumode/Makefile
+    src/test/qgpureset/Makefile
+    src/test/qhold/Makefile
+    src/test/qmgr/Makefile
+    src/test/qmove/Makefile
+    src/test/qmsg/Makefile
+    src/test/qorder/Makefile
+    src/test/qrerun/Makefile
+    src/test/qrls/Makefile
+    src/test/qrun/Makefile
+    src/test/qselect/Makefile
+    src/test/qsig/Makefile
+    src/test/qstart/Makefile
+    src/test/qstat/Makefile
+    src/test/qstop/Makefile
+    src/test/qsub_functions/Makefile
+    src/test/qterm/Makefile
+    src/test/momctl/Makefile
 	  src/drmaa/test/Makefile
-    src/lib/Libattr/test/Makefile
-    src/lib/Libattr/test/attr_atomic/Makefile
-    src/lib/Libattr/test/attr_fn_acl/Makefile
-    src/lib/Libattr/test/attr_fn_arst/Makefile
-    src/lib/Libattr/test/attr_fn_b/Makefile
-    src/lib/Libattr/test/attr_fn_c/Makefile
-    src/lib/Libattr/test/attr_fn_hold/Makefile
-    src/lib/Libattr/test/attr_fn_intr/Makefile
-    src/lib/Libattr/test/attr_fn_l/Makefile
-    src/lib/Libattr/test/attr_fn_ll/Makefile
-    src/lib/Libattr/test/attr_fn_nppcu/Makefile
-    src/lib/Libattr/test/attr_fn_resc/Makefile
-    src/lib/Libattr/test/attr_fn_size/Makefile
-    src/lib/Libattr/test/attr_fn_str/Makefile
-    src/lib/Libattr/test/attr_fn_time/Makefile
-    src/lib/Libattr/test/attr_fn_tokens/Makefile
-    src/lib/Libattr/test/attr_fn_tv/Makefile
-    src/lib/Libattr/test/attr_fn_unkn/Makefile
-    src/lib/Libattr/test/attr_func/Makefile
-    src/lib/Libattr/test/attr_node_func/Makefile
-    src/lib/Libcmds/test/Makefile
-    src/lib/Libcmds/test/add_verify_resources/Makefile
-    src/lib/Libcmds/test/ck_job_name/Makefile
-    src/lib/Libcmds/test/cnt2server/Makefile
-    src/lib/Libcmds/test/cvtdate/Makefile
-    src/lib/Libcmds/test/get_server/Makefile
-    src/lib/Libcmds/test/locate_job/Makefile
-    src/lib/Libcmds/test/parse_at/Makefile
-    src/lib/Libcmds/test/parse_depend/Makefile
-    src/lib/Libcmds/test/parse_destid/Makefile
-    src/lib/Libcmds/test/parse_equal/Makefile
-    src/lib/Libcmds/test/parse_jobid/Makefile
-    src/lib/Libcmds/test/parse_stage/Makefile
-    src/lib/Libcmds/test/prepare_path/Makefile
-    src/lib/Libcmds/test/prt_job_err/Makefile
-    src/lib/Libcmds/test/set_attr/Makefile
-    src/lib/Libcmds/test/set_resource/Makefile
-    src/lib/Libcsv/test/Makefile
-    src/lib/Libcsv/test/csv/Makefile
-    src/lib/Libdis/test/Makefile
-    src/lib/Libdis/test/discui_/Makefile
-    src/lib/Libdis/test/discul_/Makefile
-    src/lib/Libdis/test/disi10d_/Makefile
-    src/lib/Libdis/test/disi10l_/Makefile
-    src/lib/Libdis/test/disiui_/Makefile
-    src/lib/Libdis/test/disp10d_/Makefile
-    src/lib/Libdis/test/disp10l_/Makefile
-    src/lib/Libdis/test/disrcs/Makefile
-    src/lib/Libdis/test/disrd/Makefile
-    src/lib/Libdis/test/disrf/Makefile
-    src/lib/Libdis/test/disrfcs/Makefile
-    src/lib/Libdis/test/disrfst/Makefile
-    src/lib/Libdis/test/disrl/Makefile
-    src/lib/Libdis/test/disrl_/Makefile
-    src/lib/Libdis/test/disrsc/Makefile
-    src/lib/Libdis/test/disrsi/Makefile
-    src/lib/Libdis/test/disrsi_/Makefile
-    src/lib/Libdis/test/disrsl/Makefile
-    src/lib/Libdis/test/disrsl_/Makefile
-    src/lib/Libdis/test/disrss/Makefile
-    src/lib/Libdis/test/disrst/Makefile
-    src/lib/Libdis/test/disruc/Makefile
-    src/lib/Libdis/test/disrui/Makefile
-    src/lib/Libdis/test/disrul/Makefile
-    src/lib/Libdis/test/disrus/Makefile
-    src/lib/Libdis/test/diswcs/Makefile
-    src/lib/Libdis/test/diswf/Makefile
-    src/lib/Libdis/test/diswl_/Makefile
-    src/lib/Libdis/test/diswsi/Makefile
-    src/lib/Libdis/test/diswsl/Makefile
-    src/lib/Libdis/test/diswui/Makefile
-    src/lib/Libdis/test/diswui_/Makefile
-    src/lib/Libdis/test/diswul/Makefile
-    src/lib/Liblog/test/Makefile
-    src/lib/Liblog/test/chk_file_sec/Makefile
-    src/lib/Liblog/test/log_event/Makefile
-    src/lib/Liblog/test/pbs_log/Makefile
-    src/lib/Liblog/test/pbs_messages/Makefile
-    src/lib/Liblog/test/setup_env/Makefile
-    src/lib/Libifl/test/Makefile
-    src/lib/Libifl/test/PBSD_gpuctrl2/Makefile
-    src/lib/Libifl/test/PBSD_manage2/Makefile
-    src/lib/Libifl/test/PBSD_manager_caps/Makefile
-    src/lib/Libifl/test/PBSD_msg2/Makefile
-    src/lib/Libifl/test/PBSD_rdrpy/Makefile
-    src/lib/Libifl/test/PBSD_sig2/Makefile
-    src/lib/Libifl/test/PBSD_status/Makefile
-    src/lib/Libifl/test/PBSD_status2/Makefile
-    src/lib/Libifl/test/PBSD_submit_caps/Makefile
-    src/lib/Libifl/test/PBS_attr/Makefile
-    src/lib/Libifl/test/dec_Authen/Makefile
-    src/lib/Libifl/test/dec_CpyFil/Makefile
-    src/lib/Libifl/test/dec_Gpu/Makefile
-    src/lib/Libifl/test/dec_JobCred/Makefile
-    src/lib/Libifl/test/dec_JobFile/Makefile
-    src/lib/Libifl/test/dec_JobId/Makefile
-    src/lib/Libifl/test/dec_JobObit/Makefile
-    src/lib/Libifl/test/dec_Manage/Makefile
-    src/lib/Libifl/test/dec_MoveJob/Makefile
-    src/lib/Libifl/test/dec_MsgJob/Makefile
-    src/lib/Libifl/test/dec_QueueJob/Makefile
-    src/lib/Libifl/test/dec_Reg/Makefile
-    src/lib/Libifl/test/dec_ReqExt/Makefile
-    src/lib/Libifl/test/dec_ReqHdr/Makefile
-    src/lib/Libifl/test/dec_Resc/Makefile
-    src/lib/Libifl/test/dec_ReturnFile/Makefile
-    src/lib/Libifl/test/dec_RunJob/Makefile
-    src/lib/Libifl/test/dec_Shut/Makefile
-    src/lib/Libifl/test/dec_Sig/Makefile
-    src/lib/Libifl/test/dec_Status/Makefile
-    src/lib/Libifl/test/dec_Track/Makefile
-    src/lib/Libifl/test/dec_attrl/Makefile
-    src/lib/Libifl/test/dec_attropl/Makefile
-    src/lib/Libifl/test/dec_rpyc/Makefile
-    src/lib/Libifl/test/dec_rpys/Makefile
-    src/lib/Libifl/test/dec_svrattrl/Makefile
-    src/lib/Libifl/test/enc_CpyFil/Makefile
-    src/lib/Libifl/test/enc_Gpu/Makefile
-    src/lib/Libifl/test/enc_JobCred/Makefile
-    src/lib/Libifl/test/enc_JobFile/Makefile
-    src/lib/Libifl/test/enc_JobId/Makefile
-    src/lib/Libifl/test/enc_JobObit/Makefile
-    src/lib/Libifl/test/enc_Manage/Makefile
-    src/lib/Libifl/test/enc_MoveJob/Makefile
-    src/lib/Libifl/test/enc_MsgJob/Makefile
-    src/lib/Libifl/test/enc_QueueJob/Makefile
-    src/lib/Libifl/test/enc_QueueJob_hash/Makefile
-    src/lib/Libifl/test/enc_Reg/Makefile
-    src/lib/Libifl/test/enc_ReqExt/Makefile
-    src/lib/Libifl/test/enc_ReqHdr/Makefile
-    src/lib/Libifl/test/enc_ReturnFile/Makefile
-    src/lib/Libifl/test/enc_RunJob/Makefile
-    src/lib/Libifl/test/enc_Shut/Makefile
-    src/lib/Libifl/test/enc_Sig/Makefile
-    src/lib/Libifl/test/enc_Status/Makefile
-    src/lib/Libifl/test/enc_Track/Makefile
-    src/lib/Libifl/test/enc_attrl/Makefile
-    src/lib/Libifl/test/enc_attropl/Makefile
-    src/lib/Libifl/test/enc_attropl_hash/Makefile
-    src/lib/Libifl/test/enc_reply/Makefile
-    src/lib/Libifl/test/enc_svrattrl/Makefile
-    src/lib/Libifl/test/get_svrport/Makefile
-    src/lib/Libifl/test/list_link/Makefile
-    src/lib/Libifl/test/nonblock/Makefile
-    src/lib/Libifl/test/pbsD_alterjo/Makefile
-    src/lib/Libifl/test/pbsD_asyrun/Makefile
-    src/lib/Libifl/test/pbsD_chkptjob/Makefile
-    src/lib/Libifl/test/pbsD_connect/Makefile
-    src/lib/Libifl/test/pbsD_deljob/Makefile
-    src/lib/Libifl/test/pbsD_gpuctrl/Makefile
-    src/lib/Libifl/test/pbsD_holdjob/Makefile
-    src/lib/Libifl/test/pbsD_locjob/Makefile
-    src/lib/Libifl/test/pbsD_manager/Makefile
-    src/lib/Libifl/test/pbsD_movejob/Makefile
-    src/lib/Libifl/test/pbsD_msgjob/Makefile
-    src/lib/Libifl/test/pbsD_orderjo/Makefile
-    src/lib/Libifl/test/pbsD_rerunjo/Makefile
-    src/lib/Libifl/test/pbsD_resc/Makefile
-    src/lib/Libifl/test/pbsD_rlsjob/Makefile
-    src/lib/Libifl/test/pbsD_runjob/Makefile
-    src/lib/Libifl/test/pbsD_selectj/Makefile
-    src/lib/Libifl/test/pbsD_sigjob/Makefile
-    src/lib/Libifl/test/pbsD_stagein/Makefile
-    src/lib/Libifl/test/pbsD_statjob/Makefile
-    src/lib/Libifl/test/pbsD_statnode/Makefile
-    src/lib/Libifl/test/pbsD_statque/Makefile
-    src/lib/Libifl/test/pbsD_statsrv/Makefile
-    src/lib/Libifl/test/pbsD_submit/Makefile
-    src/lib/Libifl/test/pbsD_submit_hash/Makefile
-    src/lib/Libifl/test/pbsD_termin/Makefile
-    src/lib/Libifl/test/pbs_geterrmg/Makefile
-    src/lib/Libifl/test/pbs_statfree/Makefile
-    src/lib/Libifl/test/tcp_dis/Makefile
-    src/lib/Libifl/test/tm/Makefile
-    src/lib/Libifl/test/torquecfg/Makefile
-    src/lib/Libifl/test/trq_auth/Makefile
-    src/lib/Libnet/test/Makefile
-    src/lib/Libnet/test/conn_table/Makefile
-    src/lib/Libnet/test/get_hostaddr/Makefile
-    src/lib/Libnet/test/get_hostname/Makefile
-    src/lib/Libnet/test/md5/Makefile
-    src/lib/Libnet/test/net_client/Makefile
-    src/lib/Libnet/test/net_common/Makefile
-    src/lib/Libnet/test/net_server/Makefile
-    src/lib/Libnet/test/net_cache/Makefile
-    src/lib/Libnet/test/net_set_clse/Makefile
-    src/lib/Libnet/test/port_forwarding/Makefile
-    src/lib/Libnet/test/rm/Makefile
-    src/lib/Libnet/test/server_core/Makefile
-    src/lib/Libsite/test/Makefile
-    src/lib/Libsite/test/site_allow_u/Makefile
-    src/lib/Libsite/test/site_alt_rte/Makefile
-    src/lib/Libsite/test/site_check_u/Makefile
-    src/lib/Libsite/test/site_map_usr/Makefile
-    src/lib/Libsite/test/site_mom_chu/Makefile
-    src/lib/Libsite/test/site_mom_ckp/Makefile
-    src/lib/Libsite/test/site_mom_jst/Makefile
-    src/lib/Libutils/test/Makefile
-    src/lib/Libutils/test/u_MXML/Makefile
-    src/lib/Libutils/test/u_groups/Makefile
-    src/lib/Libutils/test/u_hash_map_structs/Makefile
-    src/lib/Libutils/test/u_lock_ctl/Makefile
-    src/lib/Libutils/test/u_misc/Makefile
-    src/lib/Libutils/test/u_mom_hierarchy/Makefile
-    src/lib/Libutils/test/u_mu/Makefile
-    src/lib/Libutils/test/u_mutex_mgr/Makefile
-    src/lib/Libutils/test/u_putenv/Makefile
-    src/lib/Libutils/test/u_threadpool/Makefile
-    src/lib/Libutils/test/u_tree/Makefile
-    src/lib/Libutils/test/u_users/Makefile
-    src/lib/Libutils/test/u_xml/Makefile
-    src/lib/test/Makefile
-    src/momctl/test/Makefile
-    src/momctl/test/momctl/Makefile
-    src/pam/test/Makefile
-    src/pam/test/pam_pbssimpleauth/Makefile
-    src/resmom/test/Makefile
-    src/resmom/test/alps_reservations/Makefile
-    src/resmom/test/catch_child/Makefile
-    src/resmom/test/checkpoint/Makefile
-    src/resmom/test/cray_cpa/Makefile
-    src/resmom/test/cray_energy/Makefile
-    src/resmom/test/generate_alps_status/Makefile
-    src/resmom/test/mom_job_func/Makefile
-    src/resmom/test/mom_comm/Makefile
-    src/resmom/test/mom_inter/Makefile
-    src/resmom/test/mom_main/Makefile
-    src/resmom/test/mom_server/Makefile
-    src/resmom/test/mom_process_request/Makefile
-    src/resmom/test/mom_req_quejob/Makefile
-    src/resmom/test/parse_config/Makefile
-    src/resmom/test/pbs_demux/Makefile
-    src/resmom/test/prolog/Makefile
-    src/resmom/test/release_reservation/Makefile
-    src/resmom/test/requests/Makefile
-    src/resmom/test/start_exec/Makefile
-    src/resmom/test/tmsock_recov/Makefile
+    src/test/allocation/Makefile
+    src/test/machine/Makefile
+    src/test/numa_core/Makefile
+    src/test/numa_chip/Makefile
+    src/test/numa_socket/Makefile
+    src/test/numa_pci_device/Makefile
+    src/test/pam_pbssimpleauth/Makefile
+    src/test/alps_reservations/Makefile
+    src/test/catch_child/Makefile
+    src/test/checkpoint/Makefile
+    src/test/cray_cpa/Makefile
+    src/test/cray_energy/Makefile
+    src/test/generate_alps_status/Makefile
+    src/test/mom_job_func/Makefile
+    src/test/mom_comm/Makefile
+    src/test/mom_inter/Makefile
+    src/test/mom_main/Makefile
+    src/test/mom_server/Makefile
+    src/test/mom_process_request/Makefile
+    src/test/mom_req_quejob/Makefile
+    src/test/parse_config/Makefile
+    src/test/pbs_demux/Makefile
+    src/test/pmix_interface/Makefile
+    src/test/pmix_operation/Makefile
+    src/test/pmix_tracker/Makefile
+    src/test/prolog/Makefile
+    src/test/release_reservation/Makefile
+    src/test/requests/Makefile
+    src/test/start_exec/Makefile
+    src/test/tmsock_recov/Makefile
+    src/test/mom_mach/Makefile
+    src/test/mom_start/Makefile
     src/resmom/linux/test/Makefile
     src/resmom/linux/test/cpuset/Makefile
-    src/resmom/linux/test/mom_mach/Makefile
     src/resmom/linux/test/sys_file/Makefile
-    src/resmom/linux/test/mom_start/Makefile
     src/resmom/linux/test/numa_node/Makefile
     src/resmom/linux/test/node_internals/Makefile
-    src/resmom/linux/test/pe_input/Makefile
-    src/server/test/Makefile
-    src/server/test/accounting/Makefile
-    src/server/test/array_func/Makefile
-    src/server/test/array_upgrade/Makefile
-    src/server/test/attr_recov/Makefile
-    src/server/test/batch_request/Makefile
-    src/server/test/delete_all_tracker/Makefile
-    src/server/test/dis_read/Makefile
-    src/server/test/display_alps_status/Makefile
-    src/server/test/id_map/Makefile
-    src/server/test/execution_slot_tracker/Makefile
-    src/server/test/exiting_jobs/Makefile
-    src/server/test/geteusernam/Makefile
-    src/server/test/incoming_request/Makefile
-    src/server/test/issue_request/Makefile
-    src/server/test/job_attr_def/Makefile
-    src/server/test/job_container/Makefile
-    src/server/test/job_func/Makefile
-    src/server/test/job_qs_upgrade/Makefile
-    src/server/test/job_recov/Makefile
-    src/server/test/job_recycler/Makefile
-    src/server/test/job_route/Makefile
-    src/server/test/job_usage_info/Makefile
-    src/server/test/login_nodes/Makefile
-    src/server/test/mom_hierarchy_handler/Makefile
-    src/server/test/node_func/Makefile
-    src/server/test/node_manager/Makefile
-    src/server/test/pbsd_init/Makefile
-    src/server/test/pbsd_main/Makefile
-    src/server/test/process_alps_status/Makefile
-    src/server/test/process_mom_update/Makefile
-    src/server/test/process_request/Makefile
-    src/server/test/queue_func/Makefile
-    src/server/test/queue_recov/Makefile
-    src/server/test/queue_recycler/Makefile
-    src/server/test/receive_mom_communication/Makefile
-    src/server/test/reply_send/Makefile
-    src/server/test/req_delete/Makefile
-    src/server/test/req_deletearray/Makefile
-    src/server/test/req_getcred/Makefile
-    src/server/test/req_gpuctrl/Makefile
-    src/server/test/req_holdarray/Makefile
-    src/server/test/req_holdjob/Makefile
-    src/server/test/req_jobobit/Makefile
-    src/server/test/req_locate/Makefile
-    src/server/test/req_manager/Makefile
-    src/server/test/req_message/Makefile
-    src/server/test/req_modify/Makefile
-    src/server/test/req_movejob/Makefile
-    src/server/test/req_quejob/Makefile
-    src/server/test/req_register/Makefile
-    src/server/test/req_rerun/Makefile
-    src/server/test/req_rescq/Makefile
-    src/server/test/req_runjob/Makefile
-    src/server/test/req_select/Makefile
-    src/server/test/req_shutdown/Makefile
-    src/server/test/req_signal/Makefile
-    src/server/test/req_stat/Makefile
-    src/server/test/req_tokens/Makefile
-    src/server/test/req_track/Makefile
-    src/server/test/resc_def_all/Makefile
-    src/server/test/run_sched/Makefile
-    src/server/test/stat_job/Makefile
-    src/server/test/svr_chk_owner/Makefile
-    src/server/test/svr_connect/Makefile
-    src/server/test/svr_format_job/Makefile
-    src/server/test/svr_func/Makefile
-    src/server/test/svr_jobfunc/Makefile
-    src/server/test/svr_mail/Makefile
-    src/server/test/svr_movejob/Makefile
-    src/server/test/svr_recov/Makefile
-    src/server/test/svr_resccost/Makefile
-    src/server/test/svr_task/Makefile
-    src/server/test/track_alps_reservations/Makefile
-    src/server/test/user_info/Makefile
+    src/test/pe_input/Makefile
     src/test/Makefile
     src/tools/test/Makefile
     src/tools/test/chk_tree/Makefile
@@ -570,7 +580,7 @@ dnl  ######################################################################
 dnl   Disable qsub keep(-k) override?
 dnl
 AC_ARG_ENABLE(qsub-keep-override, [
-  --disable-qsub-keep-override 
+  --disable-qsub-keep-override
                           do not allow the qsub -k flag to override -o -e.],
 [case "${enableval}" in
   yes)  ;;
@@ -623,12 +633,18 @@ AC_MSG_RESULT($build_drmaa)
 AM_CONDITIONAL(INCLUDE_DRMAA, [test "x$build_drmaa" = "xyes"])
 AC_SUBST(build_drmaa)
 
-if test "x$build_drmaa" = "xyes";then
-  AC_PATH_PROG(GPERF, gperf)
-  if test -z "$GPERF";then
-    AC_MSG_ERROR([When building with drmaa, gperf must be installed. Please install gperf and then continue.])
-  fi
-fi
+dnl
+dnl #######################################################################
+dnl Starting in version 5.1.3 we are not using the gperf tool to create the
+dnl drmaa source files. However, we want to keep the information around in
+dnl case we ever need to update the perfect hash for drmaa version 2 or later.
+dnl
+dnl if test "x$build_drmaa" = "xyes";then
+dnl   AC_PATH_PROG(GPERF, gperf)
+dnl   if test -z "$GPERF";then
+dnl     AC_MSG_ERROR([When building with drmaa, gperf must be installed. Please install gperf and then continue.])
+dnl   fi
+dnl fi
 
 
 dnl
@@ -679,7 +695,7 @@ dnl
 
 dnl
 dnl add _GNU_SOURCE
-dnl 
+dnl
 AC_DEFINE([_GNU_SOURCE], 1, [Define _GNU_SOURCE for portability])
 
 dnl
@@ -688,7 +704,7 @@ dnl  compile in debug code?
 dnl
 AC_MSG_CHECKING([whether to turn on the compilation of DEBUG code])
 AC_ARG_ENABLE(debug,
-    [  --enable-debug          turn on the compilation of DEBUG code],
+    [  --enable-debug          turn on the compilation of DEBUG code (for debugging symbols, use --with-debug)],
     enable_debug=$enableval, enable_debug=no)
 AC_MSG_RESULT($enable_debug)
 if test "x$enable_debug" = "xyes" ; then
@@ -730,6 +746,22 @@ if test "$DEBUG_SYMBOLS" = 'yes'; then
       ;;
   esac
   AC_MSG_RESULT([after tweak CFLAGS=$CFLAGS])
+
+  AC_MSG_RESULT([before tweak CXXFLAGS=$CXXFLAGS])
+  CXXFLAGS=`echo $CXXFLAGS | sed 's/ \?-O[[^ ]]*//g'`
+  AC_MSG_RESULT([mid tweak CXXFLAGS=$CXXFLAGS])
+  case $CXXFLAGS in
+    *-g*)
+      ;;
+    *)
+      if test "$CXXFLAGS" = ''; then
+        CXXFLAGS="-g"
+      else
+        CXXFLAGS="-g $CXXFLAGS"
+      fi
+      ;;
+  esac
+  AC_MSG_RESULT([after tweak CXXFLAGS=$CXXFLAGS])
 fi
 
 dnl if using gcc, we can be very strict
@@ -751,25 +783,15 @@ TAC_SYS_LARGEFILE
 
 
 dnl We need pthreads
-AC_CHECK_LIB(pthread, pthread_create, 
+AC_CHECK_LIB(pthread, pthread_create,
     PTHREAD_LIBS="$PTHREAD_LIBS -lpthread -lrt",
     [AC_MSG_ERROR([TORQUE needs pthreads in order to build]) ])
 LIBS="$LIBS $PTHREAD_LIBS"
 
 
-dnl we need -lssl and -lcrypto, lets make sure they exist
-AC_CHECK_LIB(ssl, SSL_accept,
-  [],
-  [AC_MSG_ERROR([TORQUE needs lib openssl-devel in order to build]) ])
-AC_CHECK_LIB(crypto, BN_init,
-  [],
-  [AC_MSG_ERROR([TORQUE needs lib crypto (often openssl-devel) in order to build]) ])
-
-
-
 dnl
 dnl we need libxml2
-dnl 
+dnl
 xmlLib=`xml2-config --libs | sed 's/-L@<:@^@<:@:space:@:>@@:>@* //g;s/-l//'`
 
 dnl skip the first two chars because its -l<libname>
@@ -778,6 +800,10 @@ AC_CHECK_LIB(${xmlLib}, xmlGetProp,
   [AC_MSG_ERROR([TORQUE needs libxml2-devel in order to build]) ])
 
 
+dnl find zlib
+AC_CHECK_LIB(z, gzopen,
+  [],
+  [AC_MSG_ERROR([TORQUE needs zlib-devel in order to build]) ])
 
 
 dnl ###########################################
@@ -802,14 +828,14 @@ dnl
 dnl If hpux and gcc, force the XOPEN interface.
 AC_MSG_CHECKING([whether to force XOPEN networking stack])
 AC_ARG_ENABLE(xopen_networking, [
-  --disable-xopen-networking      
+  --disable-xopen-networking
                           With HPUX and GCC, don't force usage of XOPEN and libxnet])
 if test "${enable_xopen_networking}" != "no" ; then
 case $GCC,$PBS_MACH in
   yes,hpux*) AC_MSG_RESULT([yes])
              AC_MSG_WARN([On HPUX and gcc, forcing XOPEN network stack.])
              AC_MSG_WARN([Use --disable-xopen-networking to prevent it])
-             AC_CHECK_LIB([xnet], [getpeername], 
+             AC_CHECK_LIB([xnet], [getpeername],
               [LIBS="-lxnet $LIBS"
                CFLAGS="$CFLAGS -D_XOPEN_SOURCE -D_XOPEN_SOURCE_EXTENDED=1"],
               [AC_MSG_WARN([This build will likely fail in mysterious ways at run-time])
@@ -877,18 +903,6 @@ if test "${enable_pemask}" = "yes" ; then
 fi
 
 
-SRFS=0
-AC_ARG_ENABLE(srfs,
-    [  --enable-srfs           enable support for SRFS on Cray])
-if test "${enable_srfs}" = "yes" ; then
-  case "${PBS_MACH}" in
-    unicos*) SRFS=1 ;;
-    *) AC_MSG_ERROR([Cannot --enable-srfs on a machine not running UNICOS]);;
-  esac
-fi
-AC_DEFINE_UNQUOTED(SRFS, ${SRFS}, [include support for SRFS on Cray])
-
-
 MOMLIBS=""
 
 PBSPOE=""
@@ -910,7 +924,7 @@ if test "x$enable_sp2" = "xyes" ; then
     esac
 fi
 AC_DEFINE_UNQUOTED(IBM_SP2, ${IBM_SP2}, [defined if this is an SP2])
-AC_SUBST(PBSPOE)    
+AC_SUBST(PBSPOE)
 AC_SUBST(PBSPOEO)
 
 AC_ARG_ENABLE(maxint-jobids, [  --enable-maxint-jobids       enables job ids to go up to maxint])
@@ -924,6 +938,42 @@ else
   AC_MSG_RESULT([no])
 fi
 
+dnl
+dnl Specify whether or not to use the resource plugin library
+dnl
+
+AC_ARG_WITH(resource-plugin, [
+  --with-resource-plugin=PATH
+                       Specifies the path to the resource plugin library to link against.
+                       For example: ./configure --with-resource-plugin=/opt/torque-plugin
+                       tells Torque that libresource_plugin.so is in /opt/torque-plugin/],
+  [PLUGIN_PATH="${withval}"], [PLUGIN_PATH=""])
+
+AC_MSG_CHECKING([Whether to use the resource plugin libary])
+
+if test "x$PLUGIN_PATH" != "x"; then
+  dnl A plugin library has been specified
+  AC_MSG_RESULT([yes])
+  AC_DEFINE(USE_RESOURCE_PLUGIN, 1, [Define to use the resource plugin])
+  MOMLIBS="$MOMLIBS -L$PLUGIN_PATH -lresource_plugin"
+else
+  AC_MSG_RESULT([no])
+fi
+
+AC_ARG_ENABLE(cgroups, [  --enable-cgroups       enable Linux control groups])
+build_linux_cgroups=no
+AC_MSG_CHECKING([whether to enable cgroups])
+if test "x$enable_cgroups" = "xyes"; then
+  AC_MSG_RESULT([yes])
+  build_linux_cgroups=yes
+  AC_DEFINE(PENABLE_LINUX_CGROUPS, 1, [Define to enable Linux cgroups])
+  RPM_AC_OPTS="$RPM_AC_OPTS --with cgroups"
+else
+  AC_MSG_RESULT([no])
+  RPM_AC_OPTS="$RPM_AC_OPTS --without cgroups"
+fi
+AM_CONDITIONAL([BUILD_LINUX_CGROUPS], test "$build_linux_cgroups" = yes)
+
 AC_ARG_ENABLE(cpuset,[  --enable-cpuset         enable Linux 2.6 kernel cpusets])
 build_l26_cpuset=no
 cpuset=0
@@ -934,9 +984,11 @@ if test "x$enable_cpuset" = "xyes" ; then
   cpuset=1
   AC_DEFINE(PENABLE_LINUX26_CPUSETS, 1, [Define to enable Linux 2.6 cpusets])
   dnl define geometry requests to allow these to be requested here
-  dnl  CFLAGS="$CFLAGS -DGEOMETRY_REQUESTS"  
+  dnl  CFLAGS="$CFLAGS -DGEOMETRY_REQUESTS"
+  RPM_AC_OPTS="$RPM_AC_OPTS --with cpuset"
 else
   AC_MSG_RESULT([no])
+  RPM_AC_OPTS="$RPM_AC_OPTS --without cpuset"
 fi
 AM_CONDITIONAL([BUILD_L26_CPUSETS], test "$build_l26_cpuset" = yes)
 
@@ -985,7 +1037,7 @@ fi
 
 
 dnl
-dnl add the option to view coverage when executing TORQUE 
+dnl add the option to view coverage when executing TORQUE
 dnl
 AC_ARG_ENABLE(coverage, [
   --enable-coverage   Builds TORQUE with --coverage in order to allow evaluation of what parts of the code are being exercised. This is mainly useful for quality assurance.])
@@ -1045,18 +1097,18 @@ fi
 
 
 
-dnl add an option to specify a path where TORQUE should look for boost 
+dnl add an option to specify a path where TORQUE should look for boost
 dnl include files
 dnl
 AC_ARG_WITH(boost-path, [
-  --with-boost-path=PATH   
+  --with-boost-path=PATH
                        Specifies the path to the boost include files.
                        Example: ./configure --with-boost-path=/usr/local/packages/boost_1_36_0
                        Will specify that the include files are in /usr/local/packages/boost_1_36_0],
  [CPPFLAGS="$CPPFLAGS -I${withval}"])
 
 AC_MSG_CHECKING([whether boost is installed])
-AC_PREPROC_IFELSE([#include <boost/version.hpp>], [AC_MSG_RESULT([yes])], [AC_MSG_ERROR([Torque needs Boost, but it was not found on your system
+AC_PREPROC_IFELSE([AC_LANG_PROGRAM([#include <boost/version.hpp>])], [AC_MSG_RESULT([yes])], [AC_MSG_ERROR([Torque needs Boost, but it was not found on your system
 
 This can be solved by one of the two following methods:
 
@@ -1067,51 +1119,148 @@ should be the path to the directory containing the boost/ directory
 for your version of boost.
 ])])
 
-AC_MSG_CHECKING([for minimum boost version (>=1.36.0)])
-AC_RUN_IFELSE([AC_LANG_PROGRAM(
-[[#include <boost/version.hpp>
+if test "$build_linux_cgroups" = "yes"; then
+  AC_MSG_CHECKING([for minimum boost version (>=1.41.0)])
+  AC_RUN_IFELSE([AC_LANG_PROGRAM(
+  [[#include <boost/version.hpp>
 #ifdef BOOST_VERSION
 #if (BOOST_VERSION < 103600)
-  error: incorrect boost version
+    error: incorrect boost version
 #endif
 #else
-  error: no boost found
+    error: no boost found
 #endif
-  ]])], [AC_MSG_RESULT([yes])], [AC_MSG_ERROR([Torque requires at least version 1.36.0 of Boost
+    ]])], [AC_MSG_RESULT([yes])], [AC_MSG_ERROR([Torque requires at least version 1.41.0 of Boost to build with cgroups enabled.
 
-This can be solved by configuring with --with-boost-path=<path>. This path
-should be the path to the directory containing the boost/ directory
-for your version of boost.
-])])
+  This can be solved by configuring with --with-boost-path=<path>. This path
+  should be the path to the directory containing the boost/ directory
+  for your version of boost.
+  ])])
+else
+  AC_MSG_CHECKING([for minimum boost version (>=1.36.0)])
+  AC_RUN_IFELSE([AC_LANG_PROGRAM(
+  [[#include <boost/version.hpp>
+#ifdef BOOST_VERSION
+#if (BOOST_VERSION < 103600)
+    error: incorrect boost version
+#endif
+#else
+    error: no boost found
+#endif
+    ]])], [AC_MSG_RESULT([yes])], [AC_MSG_ERROR([Torque requires at least version 1.36.0 of Boost
+
+  This can be solved by configuring with --with-boost-path=<path>. This path
+  should be the path to the directory containing the boost/ directory
+  for your version of boost.
+  ])])
+fi
 
 
 
-
-
-dnl add an option to specify a different path where TORQUE should look for HWLOC 
+dnl add an option to specify a different path where TORQUE should look for HWLOC
 dnl lib and include files
 dnl
 AC_ARG_WITH(hwloc-path, [
-  --with-hwloc-path=PATH   
+  --with-hwloc-path=PATH
                        Specifies the path to the hwloc libraries and include files.
-                       Example: ./configure --with-hwloc-path=/usr/local/hwloc-1.2
-                       Will specify that the include files are in /usr/local/hwloc-1.2/include and
-                       the libraries are in /usr/local/hwloc-1.2/lib],
+                       Example: ./configure --with-hwloc-path=/usr/local/hwloc-1.9
+                       Will specify that the include files are in /usr/local/hwloc-1.9/include and
+                       the libraries are in /usr/local/hwloc-1.9/lib],
   [HWLOC_LIBS="-L${withval}/lib -lhwloc"; HWLOC_CFLAGS="-I${withval}/include"],
   [TOM="BOB"])
 
 
+dnl
+dnl enable Nvidia gpu support
+dnl
+AC_MSG_CHECKING([whether to build Nvidia gpu support])
+AC_ARG_ENABLE(nvidia-gpus,
+    [  --enable-nvidia-gpus    enable Nvidia gpu support
+                          Nvidia gpu support requires the use of the Nvidia Management Library (NVML)
+                          When using --enable-nvidia-gpus, you must also specify --with-nvml-lib=DIR and
+                          --with-nvml-include=DIR. hwloc 1.9 or later is also required.
+                          See --with-hwloc-path.
+],
+    enable_nvidia=$enableval,enable_nvidia=no)
+AC_MSG_RESULT($enable_nvidia)
+case "$enable_nvidia" in
+  yes) AC_DEFINE([NVIDIA_GPUS], 1, [Define to enable Nvidia gpu support]) ;;
+  no) : ;;
+  *) AC_MSG_ERROR([--enable-nvidia-gpus should be yes or no]) ;;
+esac
+AM_CONDITIONAL([NVIDIA], test "$enable_nvidia" = yes)
 
-dnl For Linux 2.6 cpusets, libhwloc is needed for pbs_mom.
+dnl
+dnl check for nvml include and lib dir only if Nvidia gpu support has been enabled
+dnl
+if test "${enable_nvidia}" = "yes"; then
+  AC_ARG_WITH(nvml_include,
+      [  --with-nvml-include=DIR include path for nvml.h],
+      nvmlinclude=$withval,nvmlinclude=none)
+  AC_ARG_WITH(nvml_lib,
+      [  --with-nvml-lib=DIR     lib path for libnvidia-ml],
+      nvmllib=$withval,nvmllib=none)
+
+  if test "x$nvmlinclude" = "xnone" && test "x$nvmllib" == "xnone"; then
+    AC_MSG_ERROR([--with-nvml-lib and --with-nvml-include need to be specified])
+  elif test "x$nvmllib" == "xnone"; then
+    AC_MSG_ERROR([--with-nvml-lib needs to be specified])
+  elif test "x$nvmlinclude" == "xnone"; then
+    AC_MSG_ERROR([--with-nvml-include needs to be specified])
+  fi
+
+  if test "x$nvmlinclude" != "xnone" && test "x$nvmllib" != "xnone"; then
+    CPPFLAGS="$CPPFLAGS -I$nvmlinclude"
+    MOMLIBS="$MOMLIBS -L$nvmllib -lnvidia-ml"
+    gccwarnings=no
+    AC_DEFINE([NVML_API], 1, [Define to enable Nvidia NVML api support])
+  fi
+fi
+
+
+dnl For Linux 2.6 cpusets, libhwloc 1.2 or later is needed for pbs_mom.
+dnl For GPU detection, libhwloc 1.7 or later is needed for pbs_mom.
+dnl For cgroup support, libhwloc 1.7 or later is needed for pbs_mom.
+dnl hwloc 1.7 is newer than the versions distributed with supported operating systems.
+dnl hwloc 1.9 is stable. Therefore, 1.9 or later will be required.
 dnl We are using pkg-config to figure out libs and cflags.
 dnl The used m4 macro is found in buildutils/pkg.m4.
-dnl In addition, we check libhwloc for hwloc_bitmap_list_snprintf (present since v1.2).
-if test "${build_l26_cpuset}" = "yes" ; then
-  if test "${build_mom}" = "yes" ; then
-    PKG_CHECK_MODULES([HWLOC], [hwloc >= 1.2],
-      [ MOMLIBS="$MOMLIBS $HWLOC_LIBS"; CFLAGS="$CFLAGS $HWLOC_CFLAGS" ],
-      [ AC_MSG_ERROR([cpuset support requires the hwloc development package
+dnl In addition, we check libhwloc for hwloc_linux_get_tid_last_cpu_location (present since v1.9).
+if test "${build_l26_cpuset}" = "yes" || test "${enable_nvidia}" = "yes" || test "${build_linux_cgroups}" = "yes"; then
+  if test "${build_l26_cpuset}" = "yes"; then
+    # The carriage return is siginifican. Do not delete it
+    CPUSET_DEPENDS_ON_HWLOC="cpuset support requires the hwloc development package
+"
+  fi
 
+  if test "${enable_nvidia}" = "yes"; then
+    # The carriage return is siginificant. Do not delete it
+    GPU_DETECTION_DEPENDS_ON_HWLOC="GPU detection requires the hwloc development package
+"
+  # In order to get AC_CHECK_LIB to pick up the nvml library
+  # if it is not in the default location we need to add
+  # the value of nvmllib set in --with-nvml-lib to LDFLAGS
+  LDFLAGS="$LDFLAGS -L$nvmllib"
+  AC_CHECK_LIB([nvidia-ml], [nvmlDeviceGetHandleByIndex],,
+     [AC_MSG_ERROR([libnvidia does not look like >= 4.1])])
+  fi
+
+  if test "${build_linux_cgroups}" = "yes"; then
+    # The carriage return is siginifican. Do not delete it
+    CGROUP_DEPENDS_ON_HWLOC="cgroup support requires the hwloc development package
+"
+  fi
+
+  if test "${build_mom}" = "yes"; then
+    # Do not look for package hwloc using PKG_CHECK_MODULES if the user uses --with-hwloc-dir
+    # --with-hwloc-dir sets HWLOC_LIBS and HWLOC_CFLAGS. Therefore, if HWLOC_LIBS is not empty
+    # do not look for an installed hwloc.
+    if test -z "${HWLOC_LIBS}" ; then
+      # pkg_check_modules takes the first parameter "HWLOC" and provides an "HWLOC_LIBS" and "HWLOC_CFLAGS"
+      # variable when the second parameter (the package and version we are looking for) resolves to true.
+      PKG_CHECK_MODULES([HWLOC], [hwloc >= 1.9],
+        [ MOMLIBS="$MOMLIBS $HWLOC_LIBS"; CFLAGS="$CFLAGS $HWLOC_CFLAGS"; CPPFLAGS="$CPPFLAGS $HWLOC_CFLAGS"; ],
+        [ AC_MSG_ERROR([${CPUSET_DEPENDS_ON_HWLOC}${GPU_DETECTION_DEPENDS_ON_HWLOC}${CGROUP_DEPENDS_ON_HWLOC}
 $HWLOC_PKG_ERRORS
 
 This can be solved by configuring with --with-hwloc-path=<path>. This path
@@ -1127,17 +1276,22 @@ to the PKG_CONFIG_PATH environment variable.
 If you have done these and still get this  error, try running ./autogen.sh and
 then configuring again.
 ])])
-    olibs=$LIBS
+
+    fi
+
     LIBS="$LIBS $HWLOC_LIBS";
-    AC_CHECK_LIB([hwloc], [hwloc_bitmap_list_snprintf],,
-      [AC_MSG_ERROR([libhwloc does not look like >= 1.2])])
-    LIBS=$olibs
   fi
-fi 
+fi
+
+
+if test "x$HWLOC_CFLAGS" != "xnone"; then
+  CFLAGS="$CFLAGS $HWLOC_CFLAGS"
+  CPPFLAGS="$CPPFLAGS $HWLOC_CFLAGS"
+fi
 
 
 dnl enable pbs_mom to use the cpuset API from libcpuset
-dnl only makes sense with cpusets enabled 
+dnl only makes sense with cpusets enabled
 AC_ARG_ENABLE(libcpuset, [  --enable-libcpuset      Allows pbs_mom to use the cpuset API from libcpuset])
 if test "${build_mom}" = "yes" ; then
   if test "x$GCC" = "xyes" ; then
@@ -1181,9 +1335,139 @@ if test "${build_mom}" = "yes" ; then
 fi
 
 
+dnl
+dnl Add the ability to link against the pmix library
+dnl
+dnl --with-pmix
+AC_ARG_WITH([pmix],
+            [AC_HELP_STRING([--with-pmix(=DIR)],
+                            [Build PMIx support.  DIR can either be left off, or be a valid directory name. Supplying a valid directory name adds DIR/include, DIR/lib, and DIR/lib64 to the search path for headers and libraries])])
+
+AC_MSG_CHECKING([if user requested PMIx support($with_pmix)])
+AS_IF([test -z "$with_pmix" || test "$with_pmix" = "no"],
+      [AC_MSG_RESULT([no])
+       pmix_happy=no],
+
+      [AC_MSG_RESULT([yes])
+       # check for pmix lib location */
+       AS_IF([test "x$with_pmix" = "x"],
+             [pmix_ext_install_dir=/usr],
+             [pmix_ext_install_dir=$with_pmix])
+
+       # Make sure we have the headers in the correct location
+       AC_MSG_CHECKING([PMIx include directory])
+       AS_IF([test ! -d $pmix_ext_install_dir/include],
+             [AC_MSG_RESULT([not found])
+              AC_MSG_ERROR([Cannot continue])],
+             [AC_MSG_RESULT([found])
+              AC_MSG_CHECKING([presence of pmix.h])
+              AS_IF([test "x`ls $pmix_ext_install_dir/include/pmix.h`" = "x"],
+                    [AC_MSG_RESULT([not found])
+                     AC_MSG_ERROR([Cannot continue])],
+                    [AC_MSG_RESULT([found])])])
+
+       # Now check the lib
+       AC_MSG_CHECKING([PMIx lib directory])
+       AS_IF([test ! -d $pmix_ext_install_dir/lib],
+             [AC_MSG_RESULT([not found])
+              AC_MSG_ERROR([Cannot continue])],
+             [AC_MSG_RESULT([found])
+              AC_MSG_CHECKING([presence of libpmix])
+              AS_IF([test "x`ls $pmix_ext_install_dir/lib/libpmix.*`" = "x"],
+                    [AC_MSG_RESULT([not found])
+                     AC_MSG_ERROR([Cannot continue])],
+                    [AC_MSG_RESULT([found])])])
+
+       # check the version
+       pmix_save_CPPFLAGS=$CPPFLAGS
+       pmix_save_LDFLAGS=$LDFLAGS
+       pmix_save_LIBS=$LIBS
+
+       # if the pmix_version.h file does not exist, then
+       # this must be from a pre-1.1.5 version
+       AC_MSG_CHECKING([PMIx version])
+       CPPFLAGS="-I$pmix_ext_install_dir/include $CPPFLAGS"
+       AS_IF([test "x`ls $pmix_ext_install_dir/include/pmix_version.h 2> /dev/null`" = "x"],
+             [AC_MSG_RESULT([version file not found - assuming v1.1.4])
+              pmix_version_found=1
+              pmix_version=114],
+             [AC_MSG_RESULT([version file found])
+              pmix_version_found=0])
+
+       # if it does exist, then we need to parse it to find
+       # the actual release series
+       AS_IF([test "$pmix_version_found" = "0"],
+             [AC_MSG_CHECKING([version 3x])
+              AC_PREPROC_IFELSE([AC_LANG_PROGRAM([
+                                                  #include <pmix_version.h>
+                                                  #if (PMIX_VERSION_MAJOR != 3L)
+                                                  #error "not version 3"
+                                                  #endif
+                                                  ], [])],
+                                [AC_MSG_RESULT([found])
+                                 pmix_version=3
+                                 pmix_version_found=1],
+                                [AC_MSG_RESULT([not found])])])
+
+       AS_IF([test "$pmix_version_found" = "0"],
+             [AC_MSG_CHECKING([version 2x])
+              AC_PREPROC_IFELSE([AC_LANG_PROGRAM([
+                                                  #include <pmix_version.h>
+                                                  #if (PMIX_VERSION_MAJOR != 2L)
+                                                  #error "not version 2"
+                                                  #endif
+                                                  ], [])],
+                                [AC_MSG_RESULT([found])
+                                 pmix_version=2
+                                 pmix_version_found=1],
+                                [AC_MSG_RESULT([not found])])])
+
+       AS_IF([test "$pmix_version_found" = "0"],
+             [AC_MSG_CHECKING([version 1x])
+              AC_PREPROC_IFELSE([AC_LANG_PROGRAM([
+                                                  #include <pmix_version.h>
+                                                  #if (PMIX_VERSION_MAJOR != 1L)
+                                                  #error "not version 1"
+                                                  #endif
+                                                  ], [])],
+                                [AC_MSG_RESULT([found])
+                                 pmix_version=1
+                                 pmix_version_found=1],
+                                [AC_MSG_RESULT([not found])])])
+
+       AS_IF([test "x$pmix_version" = "x" || test "$pmix_version" != "1"],
+             [AC_MSG_WARN([PMIx support requested, but version])
+              AC_MSG_WARN([information of the external lib could not])
+              AC_MSG_WARN([be detected])
+              AC_MSG_ERROR([cannot continue])])
+
+       CPPFLAGS=$pmix_save_CPPFLAGS
+       LDFLAGS=$pmix_save_LDFLAGS
+       LIBS=$pmix_save_LIBS
+
+       pmix_happy=yes])
+
+if test "${build_mom}" = "yes" ; then
+  if test "x$GCC" = "xyes"; then
+    AC_MSG_CHECKING([building PMIx support])
+    if test "${pmix_happy}" = "yes"; then
+      AC_MSG_RESULT([yes - version: $pmix_version])
+      AC_DEFINE([ENABLE_PMIX], 1, [Define to enable pmix support])
+      AC_DEFINE([PMIX_VERSION], [$pmix_version], [The PMIx version we are building against])
+      CPPFLAGS="-I$pmix_ext_install_dir/include $CPPFLAGS"
+      LDFLAGS="-L$pmix_ext_install_dir/lib $LDFLAGS"
+      MOMLIBS="$MOMLIBS -lpmix"
+    else
+      AC_MSG_RESULT([no])
+    fi
+  fi
+fi
+AM_CONDITIONAL([BUILDPMIX], test "${pmix_happy}" = yes)
+
+
 dnl fixes errors relating to unaligned memory accesses
 dnl some systems experience these errors
-dnl 
+dnl
 dnl --enable-align-memory
 AC_ARG_ENABLE(align_memory, [
   --enable-align-memory  Change compile flags to get rid of unaligned memory access errors])
@@ -1266,7 +1550,7 @@ case "$BLCR" in
     ])
     SAVE_LDFLAGS="$LDFLAGS"
     LDFLAGS="$BLCR_LDFLAGS $LDFLAGS"
-    AC_CHECK_LIB([cr], [cr_init], [ :], 
+    AC_CHECK_LIB([cr], [cr_init], [ :],
       AC_MSG_ERROR([pass the path to libcr.so to --with-blcr-lib]))
     LDFLAGS="$SAVE_LDFLAGS"
     AC_SUBST([BLCR_LDFLAGS])
@@ -1278,7 +1562,7 @@ case "$BLCR" in
     ])
     SAVE_CPPFLAGS="$CPPFLAGS"
     CPPFLAGS="$BLCR_CPPFLAGS $CPPFLAGS"
-    AC_CHECK_HEADER([libcr.h], [ :], 
+    AC_CHECK_HEADER([libcr.h], [ :],
       AC_MSG_ERROR([pass the path to libcr.so to --with-blcr-include]))
     CPPFLAGS="$SAVE_CPPFLAGS"
     AC_SUBST([BLCR_CPPFLAGS])
@@ -1299,50 +1583,11 @@ case "$BLCR" in
   *) AC_MSG_ERROR([--enable-blcr should be yes or no]) ;;
 esac
 
-
 dnl
-dnl enable Nvidia gpu support
-dnl
-AC_MSG_CHECKING([whether to build Nvidia gpu support])
-AC_ARG_ENABLE(nvidia-gpus,
-    [  --enable-nvidia-gpus    enable Nvidia gpu support],
-    NVIDIA=$enableval,NVIDIA=no)
-AC_MSG_RESULT($NVIDIA)
-case "$NVIDIA" in
-  yes) AC_DEFINE([NVIDIA_GPUS], 1, [Define to enable Nvidia gpu support]) ;;
-  no) : ;;
-  *) AC_MSG_ERROR([--enable-nvidia-gpus should be yes or no]) ;;
-esac
-AM_CONDITIONAL([NVIDIA], test "$NVIDIA" = yes)
-
-AC_ARG_WITH(nvml_include,
-    [  --with-nvml-include=DIR include path for nvml.h],
-    nvmlinclude=$withval,nvmlinclude=none)   
-AC_ARG_WITH(nvml_lib,
-    [  --with-nvml-lib=DIR     lib path for libnvidia-ml],
-    nvmllib=$withval,nvmllib=none)   
-
-if test "x$nvmlinclude" != "xnone" && test "x$nvmllib" != "xnone" ;then
-  CPPFLAGS="$CPPFLAGS -I$nvmlinclude"
-  MOMLIBS="$MOMLIBS -L$nvmllib -lnvidia-ml"
-  gccwarnings=no
-  AC_DEFINE([NVML_API], 1, [Define to enable Nvidia NVML api support])
-fi
-
-if test "x$nvmlinclude" != "xnone" && test "x$nvmllib" == "xnone" ;then
-  AC_MSG_ERROR([--with-nvml-lib needs to be specified])
-fi
-
-if test "x$nvmllib" != "xnone" && test "x$nvmlinclude" == "xnone" ;then
-  AC_MSG_ERROR([--with-nvml-include needs to be specified])
-fi
-
-
-dnl 
 dnl if we're running from a tarball (not checked out) automatically turn off
 dnl the warnings
 dnl
-AC_CHECK_FILE(src/server/test/req_jobobit/scaffolding.c,
+AC_CHECK_FILE(src/test/req_jobobit/scaffolding.c,
   TOM=bob,gccwarnings=no)
 
 
@@ -1366,15 +1611,15 @@ dnl
 AC_MSG_CHECKING([whether to build Cray's CPA support])
 AC_ARG_ENABLE(cpa,
     [  --enable-cpa            enable Cray's CPA support],
-    CPA=$enableval,CPA=no)   
+    CPA=$enableval,CPA=no)
 AC_MSG_RESULT($CPA)
 
 AC_ARG_WITH(cpa_include,
     [  --with-cpa-include=DIR  include path for cpalib.h],
-    cpainclude=$withval,cpainclude=none)   
+    cpainclude=$withval,cpainclude=none)
 AC_ARG_WITH(cpa_lib,
     [  --with-cpa-lib=DIR      lib path for libcpalib],
-    cpalib=$withval,cpalib=none)   
+    cpalib=$withval,cpalib=none)
 
 if test "x$cpainclude" != "xnone" ;then
   CPPFLAGS="$CPPFLAGS -I$cpainclude"
@@ -1410,7 +1655,7 @@ dnl
 AC_MSG_CHECKING([whether to build Cray's CSA support])
 AC_ARG_ENABLE(csa,
     [  --enable-csa            enable Cray's CSA support],
-    CSA=$enableval,CSA=no)   
+    CSA=$enableval,CSA=no)
 AC_MSG_RESULT($CSA)
 
 case "$CSA" in
@@ -1463,7 +1708,7 @@ AUTH_TYPE="classic (pbs_iff)"
 
 dnl compile for munge authorization - allows sites to use munge
 dnl as a means to validate user identity from remote hosts. (executable based implementation)
-dnl 
+dnl
 AC_ARG_ENABLE(munge_auth_exec, [
   --enable-munge-exec  (LEGACY) Allows users to be authorized using munge instead of ruserok ])
 if test "x$GCC" = "xyes" ;then
@@ -1480,19 +1725,19 @@ if test "x$GCC" = "xyes" ;then
 fi
 
 dnl compile for munge library based authorization - link with munge library
-dnl instead of using expensive popen() calls. This option requires munge 
+dnl instead of using expensive popen() calls. This option requires munge
 dnl libraries to be installed during compilation.
 
-AC_ARG_ENABLE(munge_auth, [ 
-  --enable-munge-auth Use MUNGE authentication instead ruserok method. Munge library is required. 
+AC_ARG_ENABLE(munge_auth, [
+  --enable-munge-auth Use MUNGE authentication instead ruserok method. Munge library is required.
              This method is much faster than former exec-based implementation ] )
 
 AC_MSG_CHECKING([whether to support MUNGE library based authentication])
 if test  "x$GCC" = "xyes" ; then
-  
+
   if test "${enable_munge_auth}" = "yes"; then
     if test x"${enable_munge_exec}" = x"yes"; then
-        echo 
+        echo
         AC_MSG_ERROR([ --enable-munge-auth and --enable-munge-exec options are mutually exclusive])
     fi
 
@@ -1501,7 +1746,7 @@ if test  "x$GCC" = "xyes" ; then
     AC_CHECK_LIB(munge,munge_ctx_create,LDFLAGS="$LDFLAGS -lmunge")
     AC_CHECK_HEADERS([munge.h])
 
-    if test "$ac_cv_header_munge_h" = "yes" && test "$ac_cv_lib_munge_munge_ctx_create" = "yes"; then 
+    if test "$ac_cv_header_munge_h" = "yes" && test "$ac_cv_lib_munge_munge_ctx_create" = "yes"; then
        CFLAGS="$CFLAGS -DMUNGE_AUTH -DMUNGE_AUTH_LIB"
        AUTH_TYPE="munge library (NEW)"
     else
@@ -1655,7 +1900,7 @@ if test "$SCHD_TYPE" = cc -o "$SCHD_TYPE" = basl; then
   if test "$SCHD_CODE" = none; then
     AC_MSG_ERROR([Must specify --with-sched-code for C and BASL schedulers.])
   fi
-fi  
+fi
 
 AC_SUBST(SCHD_CODE)
 
@@ -1745,7 +1990,7 @@ AC_DEFINE_UNQUOTED(SHELL_USE_ARGV, ${SHELL_USE_ARGV}, [job script name passed as
 
 
 AC_ARG_ENABLE(posixmemlock, [
-  --disable-posixmemlock  disable the moms use of mlockall.  
+  --disable-posixmemlock  disable the moms use of mlockall.
                           Some versions of OSs seem to have buggy POSIX MEMLOCK.],
 [case "${enableval}" in
   yes)  ;;
@@ -1756,7 +2001,7 @@ esac])dnl
 
 
 AC_ARG_ENABLE(privports, [
-  --disable-privports     disable the use of privileged ports for authentication.  
+  --disable-privports     disable the use of privileged ports for authentication.
                           Some versions of OSX have a buggy bind() and cannot
                           bind to privileged ports.],
 [case "${enableval}" in
@@ -1936,7 +2181,7 @@ AC_ARG_WITH(servchkptdir,
 dnl Declare which of scp, rcp, or mom_rcp is to be used for file delivery
 dnl As of TORQUE 2.1.0, default to scp if found, otherwise use the internal mom_rcp
 AC_ARG_WITH(scp,
-    [  --with-scp              use scp instead of mom_rcp (deprecated, use 
+    [  --with-scp              use scp instead of mom_rcp (deprecated, use
                           --with-rcp=scp).],
   [ AC_MSG_WARN([--with-scp is deprecated, use --with-rcp=scp])
     AC_PATH_PROG(RCP_PATH, "scp", "error")
@@ -2047,7 +2292,7 @@ fi
 AC_MSG_RESULT([$pammoddir])
 AC_SUBST(pammoddir)
 AM_CONDITIONAL(INCLUDE_PAM, [test "x$pammoddir" != "xdisabled"])
-      
+
 
 
 
@@ -2058,9 +2303,10 @@ AC_ARG_WITH(xauth,
         [
                 if test "x$withval" != "xno" ; then
                         xauth_path=$withval
+                        RPM_AC_OPTS="$RPM_AC_OPTS --define \"xauth_path ${withval}\""
                 fi
         ],
-        [       
+        [
                 TestPath="$PATH"
                 TestPath="${TestPath}${PATH_SEPARATOR}/usr/X/bin"
                 TestPath="${TestPath}${PATH_SEPARATOR}/usr/bin/X11"
@@ -2235,7 +2481,7 @@ dnl
 if test "$build_drmaa" = "yes" ;then
 gccwarnings=no
 AC_MSG_NOTICE([Configuring DRMAA ...])
-AC_PATH_PROG(GPERF, "gperf")
+#AC_PATH_PROG(GPERF, "gperf")
 AX_PROG_DOT
 AC_PATH_PROG(DOXYGEN, "doxygen", "none")
 AC_C_BIGENDIAN_CROSS
@@ -2283,19 +2529,20 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <stdarg.h>]],
 
   build_drmaa_docs=yes
   RPM_AC_OPTS="$RPM_AC_OPTS --with drmaa"
-else  
+else
   DOXYGEN=none
   build_drmaa_docs=no
   RPM_AC_OPTS="$RPM_AC_OPTS --without drmaa"
 fi
-AM_CONDITIONAL(DRMAA_BUILD, [test "x$GPERF" != "x"])
+AM_CONDITIONAL(DRMAA_BUILD, [test "x$build_drmaa" == "xyes"])
 AM_CONDITIONAL(DRMAA_DOCS, [test "$DOXYGEN" != "none"])
 AC_SUBST(build_drmaa_docs)
 drmaadocdir=$datadir/doc/$PACKAGE-drmaa
 AC_SUBST(drmaadocdir)
-    
+
 if test "x$gccwarnings" = "xyes" ;then
-  AX_CFLAGS_GCC_OPTION([-W -Wall -Wextra -Wno-unused-parameter -Wno-long-long -pedantic -Werror])
+  AX_CFLAGS_GCC_OPTION([-W -Wall -Wextra -Wno-unused-parameter -Wno-long-long -Wpedantic -Werror -Wno-sign-compare])
+  AX_CXXFLAGS_GCC_OPTION([-W -Wall -Wextra -Wno-unused-parameter -Wno-long-long -Wpedantic -Werror -Wno-sign-compare])
 fi
 
 
@@ -2355,6 +2602,7 @@ AC_OUTPUT(buildutils/pbs_mkdirs
 	  Makefile
 	  contrib/blcr/Makefile
 	  contrib/init.d/Makefile
+	  contrib/systemd/Makefile
 	  doc/Makefile
 	  doc/man1/Makefile
 	  doc/man3/Makefile
@@ -2380,26 +2628,10 @@ AC_OUTPUT(buildutils/pbs_mkdirs
 	  src/mom_rcp/Makefile
 	  src/momctl/Makefile
 	  src/resmom/Makefile
-	  src/resmom/aix4/Makefile
-	  src/resmom/aix5/Makefile
 	  src/resmom/cygwin/Makefile
 	  src/resmom/darwin/Makefile
-	  src/resmom/digitalunix/Makefile
-	  src/resmom/freebsd/Makefile
-	  src/resmom/freebsd5/Makefile
-	  src/resmom/fujitsu/Makefile
-	  src/resmom/hpux10/Makefile
-	  src/resmom/hpux11/Makefile
-	  src/resmom/irix5/Makefile
-	  src/resmom/irix6/Makefile
-	  src/resmom/irix6array/Makefile
 	  src/resmom/linux/Makefile
-	  src/resmom/netbsd/Makefile
-	  src/resmom/solaris5/Makefile
 	  src/resmom/solaris7/Makefile
-	  src/resmom/sunos4/Makefile
-	  src/resmom/unicos8/Makefile
-	  src/resmom/unicosmk2/Makefile
 	  src/scheduler.basl/Makefile
 	  src/scheduler.cc/Makefile
 	  src/scheduler.cc/samples/Makefile
@@ -2421,7 +2653,7 @@ AC_OUTPUT(buildutils/pbs_mkdirs
 )
 
 echo
-echo "Building components: server=$build_server mom=$build_mom clients=$build_clients 
+echo "Building components: server=$build_server mom=$build_mom clients=$build_clients
                      gui=$build_gui drmaa=$build_drmaa pam=`test "x$pammoddir" = "xdisabled" && echo no || echo yes`"
 echo "PBS Machine type    : $PBS_MACH"
 echo "Remote copy         : $RCP_PATH $RCP_ARGS"
@@ -2444,8 +2676,8 @@ and run configure again without --enable-gcc-warnings.])
 fi
 
 if test "${maxint_ids}" = "1" ; then
-  AC_MSG_WARN([You are enabling job ids to go up to the maximum value of an int 
-    on your system. Depending on the size of your system, this may make existing 
+  AC_MSG_WARN([You are enabling job ids to go up to the maximum value of an int
+    on your system. Depending on the size of your system, this may make existing
     jobs impossible to upgrade. BE CERTAIN BEFORE PROCEEDING!])
 fi
 echo "Ready for '${MAKE-make}'."

@@ -9,6 +9,7 @@
 #include "pbs_error_db.h"
 #include <pbs_constants.h>
 #include <string>
+#include "pbs_helper.h"
 
 #define  JOB_ENV_START_SIZE 2048
 
@@ -236,10 +237,11 @@ void calloc_or_fail(
  */
 
 int parse_variable_list(
+
   job_data_container *dest_hash, /* This is the dest hashmap for vars found */
-  job_data_container *user_env,  /* This is the source hashmap */
-  int                var_type,  /* Type for vars not pulled from the source hash */
-  int                op_type,   /* Op for vars not pulled from the source hash */
+  job_data_container * UNUSED(user_env),  /* This is the source hashmap */
+  int                  UNUSED(var_type),  /* Type for vars not pulled from the source hash */
+  int                  UNUSED(op_type),   /* Op for vars not pulled from the source hash */
   char               *the_list)  /* name=value,name1=value1,etc to be parsed */
 
   {
@@ -310,7 +312,7 @@ int parse_variable_list(
           name[delim - s] = '\0';
           job_env += name;
           job_env += "=,";
-          s = delim + 1;
+          s = ++delim + 1;
           }
         }
       }

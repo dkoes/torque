@@ -378,7 +378,7 @@ attribute_def job_attr_def[] =
   { (char *)ATTR_h,   /* "Hold_Types" */
     decode_hold,
     encode_hold,
-    set_b,
+    set_hold,
     comp_hold,
     free_null,
     NULL_FUNC,
@@ -550,7 +550,7 @@ attribute_def job_attr_def[] =
     comp_arst,
     free_arst,
     NULL_FUNC,
-    READ_WRITE,
+    READ_WRITE | ATR_DFLAG_MOM,
     ATR_TYPE_ARST,
     PARENT_TYPE_JOB
   },
@@ -562,7 +562,7 @@ attribute_def job_attr_def[] =
     comp_arst,
     free_arst,
     NULL_FUNC,
-    READ_WRITE,
+    READ_WRITE | ATR_DFLAG_MOM,
     ATR_TYPE_ARST,
     PARENT_TYPE_JOB
   },
@@ -932,7 +932,7 @@ attribute_def job_attr_def[] =
   },
 
   /* JOB_ATR_comp_time */
-  { (char *)ATTR_comp_time, /* completion time */
+  { (char *)ATTR_comp_time, /* "comp_time" */
     decode_l,
     encode_l,
     set_l,
@@ -1230,6 +1230,29 @@ attribute_def job_attr_def[] =
    ATR_TYPE_LONG,
    PARENT_TYPE_JOB},
 
+  /* JOB_ATR_request_version */
+  {ATTR_request_version, /* "request_version" */
+   decode_l,
+   encode_l,
+   set_l,
+   comp_l,
+   free_null,
+   NULL_FUNC,
+   READ_WRITE | ATR_DFLAG_MOM,
+   ATR_TYPE_LONG,
+   PARENT_TYPE_JOB},
+
+  /* JOB_ATR_req_information */
+  {ATTR_req_information, /* "req_information" */
+   decode_complete_req,
+   encode_complete_req,
+   set_complete_req,
+   comp_complete_req,
+   free_complete_req,
+   NULL_FUNC,
+   READ_WRITE | ATR_DFLAG_MOM,
+   ATR_TYPE_REQ,
+   PARENT_TYPE_JOB},
 
 /* Site defined attributes if any, see site_job_attr_*.h  */
 #include "site_job_attr_def.h"
@@ -1245,6 +1268,56 @@ attribute_def job_attr_def[] =
     READ_WRITE | ATR_DFLAG_MOM,
     ATR_TYPE_LONG,
     PARENT_TYPE_JOB},
+
+  // JOB_ATR_cpuset_string
+  {(char *)ATTR_cpustr,   /* "cpuset_string" */
+   decode_str,
+   encode_str,
+   set_str,
+   comp_str,
+   free_str,
+   NULL_FUNC,
+   READ_ONLY | ATR_DFLAG_MOM | ATR_DFLAG_OPWR | ATR_DFLAG_SvWR,
+   ATR_TYPE_STR,
+   PARENT_TYPE_JOB,
+  },
+
+  // JOB_ATR_memset_string
+  {(char *)ATTR_memstr,   /* "memset_string" */
+   decode_str,
+   encode_str,
+   set_str,
+   comp_str,
+   free_str,
+   NULL_FUNC,
+   READ_ONLY | ATR_DFLAG_MOM | ATR_DFLAG_OPWR | ATR_DFLAG_SvWR,
+   ATR_TYPE_STR,
+   PARENT_TYPE_JOB,
+  },
+
+  /* JOB_ATR_user_kill_delay */
+  {(char *)ATTR_user_kill_delay, /* "user_kill_delay" */
+    decode_l,
+    encode_l,
+    set_l,
+    comp_l,
+    free_null,
+    NULL_FUNC,
+    READ_WRITE | ATR_DFLAG_MOM,
+    ATR_TYPE_LONG,
+    PARENT_TYPE_JOB},
+
+  // JOB_ATR_idle_slot_limit
+  {(char *)ATTR_idle_slot_limit, // "idle_slot_limit"
+   decode_l,
+   encode_l,
+   set_l,
+   comp_l,
+   free_null,
+   NULL_FUNC,
+   READ_WRITE,
+   ATR_TYPE_LONG,
+   PARENT_TYPE_JOB},
 
   /* JOB_ATR_UNKN - THIS MUST BE THE LAST ENTRY */
   { (char *)"_other_",

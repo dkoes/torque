@@ -21,7 +21,7 @@ enum csa_chk_cmd
 #define B_THRESHOLD 2048
 #define EXTRA_VARIABLE_SPACE 5120
 
-struct passwd *check_pwd(job *pjob);
+bool check_pwd(job *pjob);
 
 int open_demux(u_long addr, int port);
 
@@ -60,8 +60,6 @@ int TMomFinalizeJob3(pjobexec_t *TJE, int ReadSize, int ReadErrno, int *SC);
 void nodes_free(job *pj);
 
 int add_host_to_sister_list(char *hostname, unsigned short port, struct radix_buf *list);
-
-void job_nodes(job *pjob);
 
 void sister_job_nodes(job *pjob, char *radix_hosts, char *radix_ports );
 

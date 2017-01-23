@@ -89,6 +89,11 @@
 #include "attribute.h"
 #include "resource.h"
 #include "pbs_error.h"
+#include "pbs_job.h"
+#include "pbs_helper.h"
+
+#include "complete_req.hpp"
+#include "pbs_nodes.h"
 
 /*
  * This file contains general functions for manipulating an pbs_attribute array.
@@ -121,7 +126,6 @@ int attr_atomic_set(
   int           acc;
   int           index;
   int           listidx;
-  resource      *prc;
   int            rc;
   pbs_attribute  temp;
   int            resc_access_perm = privil; /* set privilege for decode_resc() */
@@ -135,6 +139,14 @@ int attr_atomic_set(
 
   while (plist != NULL)
     {
+#ifdef USE_RESOURCE_PLUGIN
+    if (plist->al_op == SET_PLUGIN)
+      {
+      plist = (struct svrattrl *)GET_NEXT(plist->al_link);
+      continue;
+      }
+#endif
+    
     listidx++;
 
     if ((index = find_attr(pdef, plist->al_name, limit)) < 0)
@@ -185,7 +197,7 @@ int attr_atomic_set(
      */
     
     if ((strcmp(plist->al_name,ATTR_l) == 0) &&
-      (strcmp(plist->al_resc,"ncpus") == 0))
+        (strcmp(plist->al_resc,"ncpus") == 0))
       {
       char      *pc;
       if ((pc = strstr(plist->al_value,":gpus=")) != NULL)
@@ -256,12 +268,14 @@ int attr_atomic_set(
 
       if ((new_attr + index)->at_type == ATR_TYPE_RESC)
         {
-        prc = (resource *)GET_NEXT((new_attr + index)->at_val.at_list);
+        std::vector<resource> *res_ptr = (std::vector<resource> *)(new_attr + index)->at_val.at_ptr;
 
-        while (prc)
+        if (res_ptr != NULL)
           {
-          prc->rs_value.at_flags &= ~ATR_VFLAG_MODIFY;
-          prc = (resource *)GET_NEXT(prc->rs_link);
+          std::vector<resource> &resources = *res_ptr;
+
+          for (size_t i = 0; i < resources.size(); i++)
+            resources[i].rs_value.at_flags &= ~ATR_VFLAG_MODIFY;
           }
         }
       }
@@ -322,13 +336,14 @@ int attr_atomic_set(
 int attr_atomic_node_set(
 
   struct svrattrl *plist,    /* list of pbs_attribute modif structs */
-  pbs_attribute   *old,      /* unused */
+  pbs_attribute   * UNUSED(old),
   pbs_attribute   *new_attr,      /* new pbs_attribute array begins here */
   attribute_def   *pdef,     /* begin array  definition structs */
   int              limit,    /* number elts in definition array */
   int              unkn,     /* <0 unknown attrib not permitted */
   int              privil,   /* requester's access privileges   */
-  int             *badattr)  /* return list position wher bad   */
+  int             *badattr,  /* return list position where bad   */
+  bool             dont_update_nodes_file)
 
   {
   int           acc;
@@ -354,6 +369,19 @@ int attr_atomic_node_set(
         }
       else
         index = unkn;  /*if unknown attr are allowed*/
+      }
+    else if (dont_update_nodes_file == true)
+      {
+      // These attributes cannot edit the nodes file
+      if ((index == ND_ATR_properties) ||
+          (index == ND_ATR_ntype) ||
+          (index == ND_ATR_ttl) ||
+          (index == ND_ATR_acl) ||
+          (index == ND_ATR_requestid))
+        {
+        rc = PBSE_CANT_EDIT_NODES;
+        break;
+        }
       }
 
 

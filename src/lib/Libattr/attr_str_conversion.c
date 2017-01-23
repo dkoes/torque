@@ -81,9 +81,9 @@
 
 #include "log.h"
 #include "attribute.h"
-#include "server.h"
 #include "utils.h"
 #include "resource.h"
+#include "attr_req_info.hpp"
 
 
 /*
@@ -92,6 +92,7 @@
  * @param xml - to be appended to str
  * @param str - the string object that will be appended with xml
  */
+
 void appendEscapedXML(
     
   const char *xml,
@@ -123,6 +124,8 @@ void appendEscapedXML(
       }
     }
   }
+
+
 
 int size_to_str(
 
@@ -169,7 +172,7 @@ int size_to_str(
       strcat(out,"pb");
     }
 
-  return(0);
+  return(PBSE_NONE);
   } /* END size_to_str */
 
 
@@ -200,6 +203,14 @@ int attr_to_str(
 
   switch (at_def->at_type)
     {
+
+    case ATR_TYPE_BOOL:
+     
+      snprintf(local_buf, sizeof(local_buf), attr.at_val.at_bool ? "true" : "false");
+      ds += local_buf;
+      
+      break;
+
     case ATR_TYPE_LONG:
 
       snprintf(local_buf, sizeof(local_buf), "%ld", attr.at_val.at_long);
@@ -256,7 +267,7 @@ int attr_to_str(
 
     case ATR_TYPE_SIZE:
 
-      sprintf(local_buf,"%lu",attr.at_val.at_size.atsv_num);
+      size_to_str(attr.at_val.at_size, local_buf, sizeof(local_buf));
       ds += local_buf;
 
       break;
@@ -264,29 +275,30 @@ int attr_to_str(
     case ATR_TYPE_RESC:
 
       {
-      resource *current = (resource *)GET_NEXT(attr.at_val.at_list);
-
-      if (current == NULL)
+      if (attr.at_val.at_ptr == NULL)
         return(NO_ATTR_DATA);
 
-      /* print all of the resources */
-      while (current != NULL)
+      std::vector<resource> *resources = (std::vector<resource> *)attr.at_val.at_ptr;
+
+      // print all of the resources
+      for (size_t i = 0; i < resources->size(); i++)
         {
+        resource &r = resources->at(i);
 
         /* there are only 3 resource types used */
-        switch (current->rs_value.at_type)
+        switch (r.rs_value.at_type)
           {
           case ATR_TYPE_LONG:
 
             ds += "\t\t<";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
-            snprintf(local_buf, sizeof(local_buf), "%ld", current->rs_value.at_val.at_long);
+            snprintf(local_buf, sizeof(local_buf), "%ld", r.rs_value.at_val.at_long);
             ds += local_buf;
 
             ds += "</";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
             break;
@@ -294,28 +306,28 @@ int attr_to_str(
           case ATR_TYPE_STR:
 
             /* Patch provided by Martin Siegert to fix seg-fault
-             * when current->rs_value.at_val.at_str is NULL 
+             * when r.rs_value.at_val.at_str is NULL 
              * Bugzilla bug 101 
              */
 
-            if (current->rs_value.at_val.at_str == NULL)
+            if (r.rs_value.at_val.at_str == NULL)
               break;
 
-            if (strlen(current->rs_value.at_val.at_str) == 0)
+            if (strlen(r.rs_value.at_val.at_str) == 0)
               break;
 
             ds += "\t\t<";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
             
             if (XML == true)
-              appendEscapedXML(current->rs_value.at_val.at_str,ds);
+              appendEscapedXML(r.rs_value.at_val.at_str,ds);
             else
-              ds += current->rs_value.at_val.at_str;
+              ds += r.rs_value.at_val.at_str;
 
             ds += "</";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
             break;
@@ -323,22 +335,60 @@ int attr_to_str(
           case ATR_TYPE_SIZE:
 
             ds += "\t\t<";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
-            sprintf(local_buf,"%lu",current->rs_value.at_val.at_size.atsv_num);
+            size_to_str(r.rs_value.at_val.at_size, local_buf, sizeof(local_buf));
+
             ds += local_buf;
 
             ds += "</";
-            ds += current->rs_defin->rs_name;
+            ds += r.rs_defin->rs_name;
             ds += ">";
 
             break;
           }
 
-        current = (resource *)GET_NEXT(current->rs_link);
         ds += "\n";
+        } // END for each resource
+      }
+
+      break;
+
+    case ATR_TYPE_ATTR_REQ_INFO:
+      {
+      std::vector<std::string> names, values;
+      attr_req_info *cr = (attr_req_info *)attr.at_val.at_ptr;
+
+      if (cr == NULL)
+        break;
+
+      if (!strcmp(ATTR_req_infomin, at_def->at_name))
+        cr->get_min_values(names, values);
+      else if (!strcmp(ATTR_req_infomax, at_def->at_name))
+        cr->get_max_values(names, values);
+      else if (!strcmp(ATTR_req_infodefault, at_def->at_name))
+        cr->get_default_values(names, values);
+      else
+        {
+        /* something's not right */
+        return(PBSE_BAD_PARAMETER);
         }
+
+      for (unsigned int it = 0; it < names.size(); it++)
+        {
+        ds += "\n\t\t<";
+        ds += names[it].c_str();
+        ds += ">";
+
+        ds += values[it].c_str();
+
+        ds += "</";
+        ds += names[it].c_str();
+        ds += ">";
+        }
+      ds += "\n";
+
       }
 
       break;
@@ -410,6 +460,10 @@ int str_to_attr(
     case ATR_TYPE_STR:
 
       unescape_xml(val,buf,sizeof(buf));
+
+      // Free the old value, if present
+      if (attr[index].at_val.at_str != NULL)
+        free(attr[index].at_val.at_str);
 
       attr[index].at_val.at_str = strdup(buf);
 
@@ -536,11 +590,62 @@ int str_to_attr(
 
       break;
 
+    case ATR_TYPE_ATTR_REQ_INFO:
+      {
+      char *resc_parent;
+      char *resc_child;
+      char *resc_ptr = val;
+
+      int   len = strlen(resc_ptr);
+      int   rc;
+      int   errFlg = 0;
+
+      while (resc_ptr - val < len)
+        {
+        if (get_parent_and_child(resc_ptr,&resc_parent,&resc_child,
+              &resc_ptr))
+          {
+          errFlg = TRUE;
+
+          break;
+          }
+        
+        if ((rc = decode_attr_req_info(&(attr[index]),name,resc_parent,resc_child,ATR_DFLAG_ACCESS)))
+          {
+          snprintf(log_buf,sizeof(log_buf),
+            "Error decoding resource %s, %s = %s\n",
+            name,
+            resc_parent,
+            resc_child);
+          
+          errFlg = TRUE;
+
+          log_err(rc, __func__, log_buf);
+          }
+        }
+
+      if (errFlg == TRUE)
+        return(-1);
+
+
+      }
+      break;
+
     /* NYI */
     case ATR_TYPE_LIST:
     case ATR_TYPE_LL:
     case ATR_TYPE_SHORT:
     case ATR_TYPE_JINFOP:
+
+      break;
+
+    case ATR_TYPE_BOOL:
+
+      if ((val[0] == 'T') ||
+          (val[0] == 't'))
+        attr[index].at_val.at_bool = true;
+      else
+        attr[index].at_val.at_bool = false;
 
       break;
     } /* END switch (pbs_attribute type) */

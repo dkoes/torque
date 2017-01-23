@@ -105,6 +105,7 @@
 #include "resource.h"
 #include "svr_func.h" /* get_svr_attr_* */
 #include "log.h"
+#include "job_route.h" /* remove_procct */
 
 extern int     svr_authorize_jobreq(struct batch_request *, job *);
 int status_attrib(svrattrl *, attribute_def *, pbs_attribute *, int, int, tlist_head *, bool, int *, int);
@@ -138,14 +139,18 @@ int status_job(
   {
   struct brp_status *pstat;
   int                IsOwner = 0;
-  long               query_others = 0;
+  bool               query_others = false;
   long               condensed_timeout = JOB_CONDENSED_TIMEOUT;
+
+  /* Make sure procct is removed from the job 
+     resource attributes */
+  remove_procct(pjob);
 
   /* see if the client is authorized to status this job */
   if (svr_authorize_jobreq(preq, pjob) == 0)
     IsOwner = 1;
 
-  get_svr_attr_l(SRV_ATR_query_others, &query_others);
+  get_svr_attr_b(SRV_ATR_query_others, &query_others);
   if (!query_others)
     {
     if (IsOwner == 0)
@@ -178,7 +183,6 @@ int status_job(
   append_link(pstathd, &pstat->brp_stlink, pstat);
 
   /* add attributes to the status reply */
-
   *bad = 0;
 
   if (status_attrib(
@@ -194,8 +198,12 @@ int status_job(
     {
     return(PBSE_NOATTR);
     }
+  else if (condensed == false)
+    {
+    pjob->encode_plugin_resource_usage(&pstat->brp_attr);
+    }
 
-  return (0);
+  return (PBSE_NONE);
   }  /* END status_job() */
 
 
@@ -210,62 +218,38 @@ int add_walltime_remaining(
   {
   int            len = 0;
   char           buf[MAXPATHLEN+1];
-  const char   *pname;
   svrattrl      *pal;
-  resource      *pres;
   
-  int            found = 0;
-  long  remaining = 0;
-  long  upperBound = 0;
+  long           remaining = 0;
   time_t         time_now   = time(NULL);
 
   /* encode walltime remaining, this is custom because walltime 
    * remaining isn't an pbs_attribute */
-  if ((pattr + JOB_ATR_state)->at_val.at_char != 'R')
+  if (pattr[JOB_ATR_state].at_val.at_char != 'R')
     {
     /* only for running jobs, do nothing */
     return(PBSE_NONE);
     }
-  
-  if (((pattr + JOB_ATR_resource)->at_val.at_list.ll_next != NULL) &&
-      ((pattr + JOB_ATR_resource)->at_flags & ATR_VFLAG_SET))
+
+  resource_def *walltime_def = find_resc_def(svr_resc_def, "walltime", svr_resc_size);
+  if (walltime_def != NULL)
     {
-    pres = (resource *)GET_NEXT((pattr + JOB_ATR_resource)->at_val.at_list);
-    
-    if ((pattr + JOB_ATR_comp_time)->at_flags & ATR_VFLAG_SET)
-      upperBound = (pattr + JOB_ATR_comp_time)->at_val.at_long;
-    else
-      upperBound = time_now;
-    
-    /* find the walltime resource */
-    for (;pres != NULL;pres = (resource *)GET_NEXT(pres->rs_link))
+    resource *res = find_resc_entry(pattr + JOB_ATR_resource, walltime_def);
+    if (res != NULL)
       {
-      pname = pres->rs_defin->rs_name;
+      remaining = res->rs_value.at_val.at_long - (time_now - pattr[index].at_val.at_long);
       
-      if (strcmp(pname, "walltime") == 0)
+      snprintf(buf,MAXPATHLEN,"%ld",remaining);
+      
+      len = strlen(buf);
+      pal = attrlist_create("Walltime","Remaining",len+1);
+      
+      if (pal != NULL)
         {
-        /* found walltime */
-        long value = pres->rs_value.at_val.at_long;
-        remaining = value - (time_now - (pattr + index)->at_val.at_long);
-        found = upperBound * 12;
-        found = TRUE;
-        break;
+        memcpy(pal->al_value,buf,len);
+        pal->al_flags = ATR_VFLAG_SET;
+        append_link(phead,&pal->al_link,pal);
         }
-      }
-    }
-  
-  if (found == TRUE)
-    {
-    snprintf(buf,MAXPATHLEN,"%ld",remaining);
-    
-    len = strlen(buf);
-    pal = attrlist_create("Walltime","Remaining",len+1);
-    
-    if (pal != NULL)
-      {
-      memcpy(pal->al_value,buf,len);
-      pal->al_flags = ATR_VFLAG_SET;
-      append_link(phead,&pal->al_link,pal);
       }
     }
 
@@ -375,13 +359,13 @@ int get_specific_attributes_status(
     pal = (svrattrl *)GET_NEXT(pal->al_link);
     }
 
-    if (padef == job_attr_def)
-      {
-      /* We want to return walltime remaining for all running jobs */
-      if ((pattr + JOB_ATR_start_time)->at_flags & ATR_VFLAG_SET)                                                                                   
-        add_walltime_remaining(JOB_ATR_start_time, pattr, phead);
-      }
-            
+  if (padef == job_attr_def)
+    {
+    /* We want to return walltime remaining for all running jobs */
+    if ((pattr + JOB_ATR_start_time)->at_flags & ATR_VFLAG_SET)
+      add_walltime_remaining(JOB_ATR_start_time, pattr, phead);
+    }
+              
   /* SUCCESS */
   return(PBSE_NONE);
   } // END get_specific_attributes_values() 

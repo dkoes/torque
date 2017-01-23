@@ -88,6 +88,7 @@
 #include "list_link.h"
 #include "attribute.h"
 #include "pbs_error.h"
+#include "pbs_helper.h"
 
 /*
  * This file contains functions for manipulating attributes of type
@@ -129,10 +130,10 @@ int normalize_size(struct size_value *a, struct size_value *b,
 int decode_size(
 
   pbs_attribute *patr,
-  const char   *name, /* pbs_attribute name */
-  const char *rescn, /* resource name, unused here */
+  const char * UNUSED(name), /* pbs_attribute name */
+  const char * UNUSED(rescn), /* resource name, unused here */
   const char    *val, /* pbs_attribute value */
-  int            perm)  /* only used for resources */
+  int          UNUSED(perm))  /* only used for resources */
 
   {
 
@@ -176,8 +177,8 @@ int encode_size(
   tlist_head     *phead,   /* head of attrlist list */
   const char    *atname,  /* pbs_attribute name */
   const char    *rsname,  /* resource name (optional) */
-  int             mode,    /* encode mode (not used) */
-  int             perm)    /* only used for resources */
+  int            UNUSED(mode),    /* encode mode (not used) */
+  int            UNUSED(perm))    /* only used for resources */
 
   {
   size_t    ct;
@@ -412,7 +413,65 @@ normalize_size(struct size_value *a, struct size_value *b, struct size_value *ta
   }
 
 
+/*
+ * create_size_string
+ *
+ * This functions looks at the elements in values and returns
+ * either a pure number or a number with its abbreviation size
+ * in Kb, Mb, etc.
+ *
+ * @param buf  - character buffer which will contain the string
+ *               representation of the number stored
+ * @param values - a struct size_value argument which contains
+ *                 a number and a shift value indicating Kb, Mb
+ *                 Gb, etc. for the number contained.
+ *
+ */
 
+void create_size_string(
+
+  char *buf, 
+  struct size_value values)
+
+  {
+  char size_abbrev[5];
+
+  memset(size_abbrev, 0, 5);
+
+  switch (values.atsv_shift)
+    {
+    case 10:
+      strcpy(size_abbrev, "kb");
+      break;
+
+    case 20:
+      strcpy(size_abbrev, "mb");
+      break;
+
+    case 30:
+      strcpy(size_abbrev, "gb");
+      break;
+
+    case 40:
+      strcpy(size_abbrev, "tb");
+      break;
+
+    case 50:
+      strcpy(size_abbrev, "pb");
+      break;
+
+    case 60:
+      strcpy(size_abbrev, "eb");
+      break;
+    }
+
+    if (size_abbrev[0] == 0)
+      sprintf(buf, "%lu", values.atsv_num);
+    else
+      sprintf(buf, "%lu%s", values.atsv_num, size_abbrev);
+
+    return;
+  }
 
 
 /*
@@ -475,6 +534,13 @@ int to_size(
       psize->atsv_shift = 50;
       break;
 
+    case 'e':
+
+    case 'E':
+      psize->atsv_shift = 60;
+      break;
+
+
     case 'b':
 
     case 'B':
@@ -522,7 +588,7 @@ int to_size(
       }
     }
 
-  return(0);
+  return(PBSE_NONE);
   }
 
 

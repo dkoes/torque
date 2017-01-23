@@ -102,7 +102,7 @@
 #include "pbs_error.h"
 #include "log.h"
 #include "../lib/Liblog/pbs_log.h"
-#include "../lib/Libifl/lib_ifl.h"
+#include "lib_ifl.h"
 #include "svrfunc.h"
 #include "mom_job_func.h" /* mom_job_purge */
 
@@ -144,7 +144,6 @@ const char *TJobFileType[] =
   NULL
   };
 
-extern tlist_head svr_alljobs;
 extern tlist_head svr_newjobs;
 extern attribute_def job_attr_def[];
 extern char *path_jobs;
@@ -300,7 +299,7 @@ void mom_req_quejob(
     else
       {
       /* reject the job. It is already working here. */
-      sprintf(log_buffer, "Job already exits. State: %d substate: %d", pj->ji_qs.ji_state, pj->ji_qs.ji_substate);
+      sprintf(log_buffer, "Job already exists. State: %d substate: %d", pj->ji_qs.ji_state, pj->ji_qs.ji_substate);
       log_err(-1, __func__, log_buffer);
       sprintf(log_buffer, "Job %s already on mom", pj->ji_qs.ji_jobid);
       req_reject(PBSE_JOBEXIST, 0, preq, NULL, log_buffer);
@@ -311,7 +310,7 @@ void mom_req_quejob(
     {
     /* if not already here, allocate job struct */
 
-    if ((pj = job_alloc()) == NULL)
+    if ((pj = mom_job_alloc()) == NULL)
       {
       /* FAILURE */
 
@@ -463,7 +462,7 @@ void mom_req_quejob(
 
     if (reply_jobid(preq,pj->ji_qs.ji_jobid,BATCH_REPLY_CHOICE_Queue) == 0)
       {
-      delete_link(&pj->ji_alljobs);
+      remove_from_job_list(pj);
 
       append_link(&svr_newjobs,&pj->ji_alljobs,pj);
 
@@ -728,6 +727,7 @@ void req_mvjobfile(
   job         *pj;
 
   struct passwd *pwd;
+  char          *buf = NULL;
 
   jft = (enum job_file)preq->rq_ind.rq_jobfile.rq_type;
 
@@ -754,15 +754,19 @@ void req_mvjobfile(
     return;
     }
 
+  bool good;
+  good = check_pwd(pj);
   if ((pj->ji_grpcache == NULL) && 
-      (check_pwd(pj) == NULL))
+      (good == false))
     {
     req_reject(PBSE_UNKJOBID, 0, preq, NULL, NULL);
 
     return;
     }
 
-  if ((pwd = getpwnam_ext(pj->ji_wattr[JOB_ATR_euser].at_val.at_str)) == NULL)
+  /* check_pwd allocated pwd and getpwnam_ext is going to allocate
+     another one. Free pwd first */
+  if ((pwd = getpwnam_ext(&buf, pj->ji_wattr[JOB_ATR_euser].at_val.at_str)) == NULL)
     {
     /* FAILURE */
     req_reject(PBSE_MOMREJECT, 0, preq, NULL, "password lookup failed");
@@ -781,7 +785,15 @@ void req_mvjobfile(
 
     req_reject(PBSE_SYSTEM, 0, preq, NULL, log_buffer);
 
+    if (pwd)
+      {
+      free_pwnam(pwd, buf);
+      }
     return;
+    }
+  if (pwd)
+    {
+    free_pwnam(pwd, buf);
     }
 
   if (write_ac_socket(
@@ -1009,20 +1021,25 @@ void req_commit(
     return;
     }
 
-  if (pj->ji_qs.ji_substate != JOB_SUBSTATE_TRANSICM)
+  pj->ji_qs.ji_state    = JOB_STATE_TRANSIT;
+  pj->ji_qs.ji_substate = JOB_SUBSTATE_TRANSICM;
+  pj->ji_wattr[JOB_ATR_state].at_val.at_char = 'T';
+  pj->ji_wattr[JOB_ATR_state].at_flags |= ATR_VFLAG_SET;
+
+/*  if (pj->ji_qs.ji_substate != JOB_SUBSTATE_TRANSICM)
     {
     log_err(errno, "req_commit", (char *)"cannot commit job in unexpected state");
 
     req_reject(PBSE_IVALREQ, 0, preq, NULL, NULL);
 
     return;
-    }
+    }*/
 
   /* move job from new job list to "all" job list, set to running state */
 
   delete_link(&pj->ji_alljobs);
 
-  append_link(&svr_alljobs, &pj->ji_alljobs, pj);
+  alljobs_list.push_back(pj);
 
   /*
   ** Set JOB_SVFLG_HERE to indicate that this is Mother Superior.

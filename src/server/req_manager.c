@@ -130,10 +130,8 @@
 #include "pbs_nodes.h"
 #include "work_task.h"
 #include "mcom.h"
-#include "../lib/Libattr/attr_node_func.h" /* free_prop_list */
 #include "node_func.h" /* init_prop, find_nodebyname, reinitialize_node_iterator, recompute_ntype_cnts, effective_node_delete, create_pbs_dynamic_node */
 #include "node_manager.h" /* setup_notification */
-#include "../lib/Libutils/u_lock_ctl.h" /* unlock_node */
 #include "queue_func.h" /* find_queuebyname, que_alloc, que_free */
 #include "queue_recov.h" /* que_save */
 #include "mutex_mgr.hpp"
@@ -141,6 +139,7 @@
 #include "req_rerun.h"
 #include "req_delete.h"
 #include "mom_hierarchy_handler.h"
+#include "attr_req_info.hpp"
 
 
 #define PERM_MANAGER (ATR_DFLAG_MGWR | ATR_DFLAG_MGRD)
@@ -161,14 +160,14 @@ extern char          *msg_man_cre;
 extern char          *msg_man_del;
 extern char          *msg_man_set;
 extern char          *msg_man_uns;
-extern int            disable_timeout_check;
+extern time_t         pbs_incoming_tcp_timeout;
+extern int            default_gpu_mode;
 //extern mom_hierarchy_t *mh;
 
 
 extern int que_purge(pbs_queue *);
 extern void save_characteristic(struct pbsnode *, node_check_info *);
 extern int chk_characteristic(struct pbsnode *, node_check_info *, int *);
-extern int hasprop(struct pbsnode *, struct prop *);
 extern int PNodeStateToString(int, char *, int);
 extern job *get_job_from_job_usage_info(job_usage_info *jui, struct pbsnode *pnode);
 
@@ -347,12 +346,12 @@ int set_queue_type(
  * mgr_log_attr - log the change of an pbs_attribute
  */
 
-static void mgr_log_attr(
+void mgr_log_attr(
 
-  char *msg,
+  const char      *msg,
   struct svrattrl *plist,
-  int logclass,           /* see log.h */
-  char *objname)          /* object being modified */
+  int              logclass,           /* see log.h */
+  const char      *objname)          /* object being modified */
 
   {
   const char *pstr;
@@ -388,6 +387,81 @@ static void mgr_log_attr(
     }
   } /* END mgr_log_attr() */
 
+
+
+int update_user_acls(
+
+  pbs_attribute *pattr,
+  enum batch_op  op)
+
+  {
+  int                   rc = PBSE_NONE;
+  struct array_strings *pstr = pattr->at_val.at_arst;
+
+  if ((op == UNSET) ||
+      (op == SET))
+    limited_acls.clear_users();
+
+  if (pstr == NULL)
+    {
+    return(rc);
+    }
+
+  for (int i = 0; i < pstr->as_usedptr; i++)
+    {
+    if (op == DECR)
+      limited_acls.remove_user_configuration(pstr->as_string[i]);
+    else if ((op == INCR) ||
+             (op == SET))
+      limited_acls.add_user_configuration(pstr->as_string[i]);
+    }
+
+  return(rc);
+  } // END update_user_acls()
+
+
+
+void decrement_ident_acls(
+
+  svrattrl *plist,
+  int       which)
+
+  {
+  if (which == USER)
+    limited_acls.remove_user_configuration(plist->al_value);
+  else
+    limited_acls.remove_group_configuration(plist->al_value);
+  } // END decrement_ident_acls()
+
+
+
+int update_group_acls(
+
+  pbs_attribute *pattr,
+  enum batch_op  op)
+
+  {
+  int rc = PBSE_NONE;
+  struct array_strings *pstr = pattr->at_val.at_arst;
+
+  if (pstr == NULL)
+    {
+    return(rc);
+    }
+
+  if ((op == UNSET) ||
+      (op == SET))
+    limited_acls.clear_groups();
+
+  for (int i = 0; i < pstr->as_usedptr; i++)
+    {
+    if ((op == INCR) ||
+             (op == SET))
+      limited_acls.add_group_configuration(pstr->as_string[i]);
+    }
+
+  return(rc);
+  }
 
 
 
@@ -469,23 +543,46 @@ static int mgr_set_attr(
           }
         }
 
-      if ((index == SRV_ATR_tcp_timeout) &&
-          (pnew->at_val.at_long < 300))
-        disable_timeout_check = TRUE;
+      if (pdef == svr_attr_def)
+        {
+        if (index == SRV_ATR_acl_users_hosts)
+          {
+          if (plist->al_op == DECR)
+            decrement_ident_acls(plist, USER);
+          else 
+            update_user_acls(pnew, plist->al_op);
+          }
+        else if (index == SRV_ATR_acl_groups_hosts)
+          {
+          if (plist->al_op == DECR)
+            decrement_ident_acls(plist, GROUP);
+          else
+            update_group_acls(pnew, plist->al_op);
+          }
+        else if (index == SRV_ATR_tcp_incoming_timeout)
+          pbs_incoming_tcp_timeout = pnew->at_val.at_long;
+        }
 
       /* now replace the old values with any modified new values */
 
       (pdef + index)->at_free(pold);
 
-      if ((pold->at_type == ATR_TYPE_LIST) ||
-          (pold->at_type == ATR_TYPE_RESC))
+      if (pold->at_type == ATR_TYPE_LIST)
         {
         list_move(&pnew->at_val.at_list, &pold->at_val.at_list);
         }
-      else
+      else if (pold->at_type == ATR_TYPE_RESC)
         {
-        *pold = *pnew;
+        void *old_ptr = pold->at_val.at_ptr;
+        pold->at_val.at_ptr = pnew->at_val.at_ptr;
+        pnew->at_val.at_ptr = old_ptr;
         }
+      else if (pold->at_type == ATR_TYPE_ATTR_REQ_INFO)
+        {
+        pold->at_val.at_ptr = pnew->at_val.at_ptr;
+        }
+      else
+        *pold = *pnew;
 
       pold->at_flags = pnew->at_flags; /* includes MODIFY */
       }
@@ -526,7 +623,6 @@ int mgr_unset_attr(
   int   ord;
   svrattrl *pl;
   resource_def *prsdef;
-  resource *presc;
 
   /* first check the pbs_attribute exists and we have privilege to set */
 
@@ -588,6 +684,14 @@ int mgr_unset_attr(
   while (plist != NULL)
     {
     index = find_attr(pdef, plist->al_name, limit);
+      
+    if (pdef == svr_attr_def)
+      {
+      if (index == SRV_ATR_acl_users_hosts)
+        update_user_acls(pattr + index, UNSET);
+      else if (index == SRV_ATR_acl_groups_hosts)
+        update_group_acls(pattr + index, UNSET);
+      }
 
     if (((pdef + index)->at_type == ATR_TYPE_RESC) &&
         (plist->al_resc != NULL))
@@ -599,18 +703,28 @@ int mgr_unset_attr(
                  plist->al_resc,
                  svr_resc_size);
 
-      if ((presc = find_resc_entry(pattr + index, prsdef)))
+      std::vector<resource> *resources = (std::vector<resource> *)pattr[index].at_val.at_ptr;
+
+      if (resources != NULL)
         {
-        if ((pdef->at_parent != PARENT_TYPE_SERVER) ||
-            (index != SRV_ATR_resource_cost))
+        int index = -1;
+
+        for (size_t i = 0; i < resources->size(); i++)
           {
-          prsdef->rs_free(&presc->rs_value);
+          resource &r = resources->at(i);
+          if (!strcmp(r.rs_defin->rs_name, prsdef->rs_name))
+            {
+            prsdef->rs_free(&r.rs_value);
+            index = i;
+            break;
+            }
           }
 
-        delete_link(&presc->rs_link);
+        if (index != -1)
+          {
+          resources->erase(resources->begin() + index);
+          }
         }
-
-      free(presc);
       }
     else
       {
@@ -700,14 +814,12 @@ int mgr_set_node_attr(
   int            *bad,    /* if there is a "bad pbs_attribute" pass back 
                              position via this loc */
   void           *parent, /*may go unused in this function */
-  int             mode)  /*passed to attrib's action func not used by 
+  int             mode,  /*passed to attrib's action func not used by 
                            this func at this time*/
+  bool            dont_update_nodes)
 
   {
-  int              i;
   int              index;
-  int              nstatus = 0;
-  int              nprops = 0;
   int              rc = PBSE_NONE;
   pbs_attribute   *new_attr;
   pbs_attribute   *unused = NULL;
@@ -715,9 +827,6 @@ int mgr_set_node_attr(
 
   struct pbsnode   tnode;  /*temporary node*/
 
-  struct prop     *pdest;
-
-  struct prop    **plink;
   char             log_buf[LOCAL_LOG_BUF_SIZE];
 
   if (plist == NULL)
@@ -767,7 +876,15 @@ int mgr_set_node_attr(
    * return code (rc) shapes caller's reply
    */
 
-  if ((rc = attr_atomic_node_set(plist, unused, new_attr, pdef, limit, -1, privil, bad)) != 0)
+  if ((rc = attr_atomic_node_set(plist,
+                                 unused,
+                                 new_attr,
+                                 pdef,
+                                 limit,
+                                 -1,
+                                 privil,
+                                 bad,
+                                 dont_update_nodes)) != 0)
     {
     attr_atomic_kill(new_attr, pdef, limit);
 
@@ -827,8 +944,6 @@ int mgr_set_node_attr(
     pnode->nd_prop = NULL;
     }
 
-  /* NOTE:  nd_status properly freed during pbs_attribute alter */
-
   if ((pnode->nd_state != tnode.nd_state))
     {
     char OrigState[1024];
@@ -852,27 +967,13 @@ int mgr_set_node_attr(
       PNodeStateToString(tnode.nd_state, FinalState, sizeof(FinalState));
 
       sprintf(log_buf, "node %s state changed from %s to %s",
-        pnode->nd_name,
+        pnode->get_name(),
         OrigState,
         FinalState);
 
-      log_event(PBSEVENT_ADMIN,PBS_EVENTCLASS_NODE,pnode->nd_name,log_buf);
+      log_event(PBSEVENT_ADMIN, PBS_EVENTCLASS_NODE, pnode->get_name(), log_buf);
       }
     }
-
-  /* NOTE:  nd_status properly freed during pbs_attribute alter */
-
-  /*
-    if ((pnode->nd_status != NULL) && (pnode->nd_status != tnode.nd_status))
-      {
-      if (pnode->nd_status->as_buf != NULL)
-        free(pnode->nd_status->as_buf);
-
-      free(pnode->nd_status);
-
-      pnode->nd_status = NULL;
-      }
-  */
 
   *pnode              = tnode;        /* updates all data including linking in props */
 
@@ -881,63 +982,8 @@ int mgr_set_node_attr(
   /*dispense with the pbs_attribute array itself*/
 
   /* update prop list based on new prop array */
-
-  free_prop_list(pnode->nd_first);
-
-  plink = &pnode->nd_first;
-
-  if (pnode->nd_prop)
-    {
-    nprops = pnode->nd_prop->as_usedptr;
-
-    for (i = 0;i < nprops;++i)
-      {
-      pdest = init_prop(pnode->nd_prop->as_string[i]);
-
-      *plink = pdest;
-      plink  = &pdest->next;
-      }
-    }
-
-  /* now add in name as last prop */
-
-  pdest  = init_prop(pnode->nd_name);
-
-  *plink = pdest;
-
-  pnode->nd_last = pdest;
-
-  pnode->nd_nprops = nprops + 1;
-
-  /* update status list based on new status array */
-
-  free_prop_list(pnode->nd_f_st);
-
-  plink = &pnode->nd_f_st;
-
-  if (pnode->nd_status != NULL)
-    {
-    nstatus = pnode->nd_status->as_usedptr;
-
-    for (i = 0;i < nstatus;++i)
-      {
-      pdest = init_prop(pnode->nd_status->as_string[i]);
-
-      *plink = pdest;
-      plink  = &pdest->next;
-      }
-    }
-
-  /* now add in name as last status */
-
-  pdest  = init_prop(pnode->nd_name);
-
-  *plink = pdest;
-
-  pnode->nd_l_st = pdest;
-
-  pnode->nd_nstatus = nstatus + 1;
-
+  pnode->update_properties();
+  
   /* now update subnodes */
 
   update_subnode(pnode);
@@ -1495,7 +1541,10 @@ void mgr_queue_set(
       mgr_log_attr(msg_man_set, plist, PBS_EVENTCLASS_QUEUE, pque->qu_qs.qu_name);
 
       if (allques == FALSE)
+        {
+        que_mutex.set_unlock_on_exit(false);
         break;
+        }
 
       }
 
@@ -1674,7 +1723,14 @@ void mgr_node_set(
 
   struct pbsnode   *pnode = NULL;
   struct pbsnode  **problem_nodes = NULL;
-  struct prop       props;
+  prop              props;
+  bool              dont_update_nodes = false;
+
+  get_svr_attr_b(SRV_ATR_DontWriteNodesFile, &dont_update_nodes);
+
+  if ((strcmp(preq->rq_ind.rq_manager.rq_objname, "all") == 0) ||
+      (strcmp(preq->rq_ind.rq_manager.rq_objname, "ALL") == 0))
+    strcpy(preq->rq_ind.rq_manager.rq_objname, ":ALL");
 
   if ((*preq->rq_ind.rq_manager.rq_objname == '\0') ||
       (*preq->rq_ind.rq_manager.rq_objname == '@') ||
@@ -1693,9 +1749,8 @@ void mgr_node_set(
         {
         propnodes = 1;
         nodename = preq->rq_ind.rq_manager.rq_objname;
-        props.name = (char *)nodename + 1;
+        props.name = nodename + 1;
         props.mark = 1;
-        props.next = NULL;
         }
       else
         {
@@ -1734,11 +1789,13 @@ void mgr_node_set(
   
     reinitialize_node_iterator(&iter);
     pnode = NULL;
+    std::vector<prop> prop_list;
+    prop_list.push_back(props);
 
     while ((pnode = next_node(&allnodes,pnode,&iter)) != NULL)
       {
       if ((propnodes == TRUE) && 
-          (!hasprop(pnode, &props)))
+          (!pnode->hasprop(&prop_list)))
         {
         continue;
         }
@@ -1753,7 +1810,8 @@ void mgr_node_set(
              preq->rq_perm,
              &bad,
              (void *)pnode,
-             ATR_ACTION_ALTER);
+             ATR_ACTION_ALTER,
+             dont_update_nodes);
 
       if (rc != 0)
         {
@@ -1767,9 +1825,15 @@ void mgr_node_set(
         /* modifications succeeded for this node */
         chk_characteristic(pnode, &nci, &need_todo);
 
-        mgr_log_attr(msg_man_set, plist, PBS_EVENTCLASS_NODE, pnode->nd_name);
+        mgr_log_attr(msg_man_set, plist, PBS_EVENTCLASS_NODE, pnode->get_name());
         }
       }  /* END for each node */
+
+    if (iter.node_index != NULL)
+      delete iter.node_index;
+
+    if (iter.alps_index != NULL)
+      delete iter.alps_index;
 
     } /* END multiple node case */
   else
@@ -1785,7 +1849,8 @@ void mgr_node_set(
            preq->rq_perm,
            &bad,
            (void *)pnode,
-           ATR_ACTION_ALTER);
+           ATR_ACTION_ALTER,
+           dont_update_nodes);
 
     if (rc != 0)
       {
@@ -1820,7 +1885,7 @@ void mgr_node_set(
           break;
         }
 
-      unlock_node(pnode, "mgr_node_set", (char *)"error", LOGLEVEL);
+      pnode->unlock_node(__func__, "error", LOGLEVEL);
       
       return;
       } /* END if (rc != 0) */ 
@@ -1829,10 +1894,10 @@ void mgr_node_set(
       /* modifications succeeded for this node */
       chk_characteristic(pnode, &nci, &need_todo);
       
-      mgr_log_attr(msg_man_set, plist, PBS_EVENTCLASS_NODE, pnode->nd_name);
+      mgr_log_attr(msg_man_set, plist, PBS_EVENTCLASS_NODE, pnode->get_name());
       }
 
-    unlock_node(pnode, "mgr_node_set", (char *)"single_node", LOGLEVEL);
+    pnode->unlock_node(__func__, "single_node", LOGLEVEL);
     } /* END single node case */
 
   if (need_todo & WRITENODE_STATE)
@@ -1874,7 +1939,7 @@ void mgr_node_set(
       /* one or more problems encountered */
 
       for (len = 0, i = 0;i < problem_cnt;i++)
-        len += strlen(problem_nodes[i]->nd_name) + 3;
+        len += strlen(problem_nodes[i]->get_name()) + 3;
 
       len += strlen(pbse_to_txt(PBSE_GMODERR));
 
@@ -1887,7 +1952,7 @@ void mgr_node_set(
           if (i)
             strcat(problem_names, ", ");
 
-          strcat(problem_names, problem_nodes[i]->nd_name);
+          strcat(problem_names, problem_nodes[i]->get_name());
           }
 
         reply_text(preq, PBSE_GMODERR, problem_names);
@@ -1936,8 +2001,7 @@ static bool wait_for_job_state(int jobid,int newState,int timeout)
   return false; //We timed out trying to delete the job from the MOM.
   }
 
-#define TIMEOUT_FOR_JOB_DELETE 120
-#define TIMEOUT_FOR_JOB_REQUEUE 120
+
 
 static bool requeue_or_delete_jobs(
     
@@ -1946,7 +2010,9 @@ static bool requeue_or_delete_jobs(
 
   {
   std::vector<int> jids;
-  bool requeue_rc = true;
+  bool             requeue_rc = true;
+  long             delete_timeout = TIMEOUT_FOR_JOB_DEL_REQ;
+  long             requeue_timeout = TIMEOUT_FOR_JOB_DEL_REQ;
 
   for(std::vector<job_usage_info>::iterator i = pnode->nd_job_usages.begin();i != pnode->nd_job_usages.end();i++)
     {
@@ -1954,9 +2020,10 @@ static bool requeue_or_delete_jobs(
     }
   for(std::vector<int>::iterator jid = jids.begin();jid != jids.end();jid++)
     {
-    tmp_unlock_node(pnode,__func__,NULL,LOGLEVEL);
+    pnode->tmp_unlock_node(__func__, NULL, LOGLEVEL);
     job *pjob = svr_find_job_by_id(*jid);
-    tmp_lock_node(pnode,__func__,NULL,LOGLEVEL);
+    pnode->tmp_lock_node(__func__, NULL, LOGLEVEL);
+
     if(pjob != NULL)
       {
       char *dup_jobid = strdup(pjob->ji_qs.ji_jobid);
@@ -1978,14 +2045,16 @@ static bool requeue_or_delete_jobs(
       brDelete->rq_ind.rq_delete.rq_objtype = MGR_OBJ_JOB;
       brDelete->rq_ind.rq_delete.rq_cmd = MGR_CMD_DELETE;
       unlock_ji_mutex(pjob,__func__,NULL,LOGLEVEL);
-      tmp_unlock_node(pnode, __func__, NULL, LOGLEVEL);
+      pnode->tmp_unlock_node(__func__, NULL, LOGLEVEL);
       int rc = req_rerunjob(brRerun);
       if(rc != PBSE_NONE)
         {
         rc = req_deletejob(brDelete);
         if(rc == PBSE_NONE)
           {
-          if(!wait_for_job_state(*jid,JOB_STATE_COMPLETE,TIMEOUT_FOR_JOB_DELETE))
+          get_svr_attr_l(SRV_ATR_TimeoutForJobDelete, &delete_timeout);
+
+          if(!wait_for_job_state(*jid,JOB_STATE_COMPLETE,delete_timeout))
             {
             set_task(WORK_Immed, 0, ensure_deleted, dup_jobid, FALSE);
             dup_jobid = NULL;
@@ -1996,14 +2065,16 @@ static bool requeue_or_delete_jobs(
       else
         {
         free_br(brDelete);
-        if(!wait_for_job_state(*jid,JOB_STATE_QUEUED,TIMEOUT_FOR_JOB_REQUEUE))
+        get_svr_attr_l(SRV_ATR_TimeoutForJobRequeue, &requeue_timeout);
+
+        if(!wait_for_job_state(*jid,JOB_STATE_QUEUED,requeue_timeout))
           {
           set_task(WORK_Immed, 0, ensure_deleted, dup_jobid, FALSE);
           dup_jobid = NULL;
           requeue_rc = false; //Timing out with the MOMs is the only error we care about.
           }
         }
-      tmp_lock_node(pnode, __func__, NULL, LOGLEVEL);
+      pnode->tmp_lock_node(__func__, NULL, LOGLEVEL);
       if(dup_jobid != NULL)
         {
         free(dup_jobid);
@@ -2012,6 +2083,8 @@ static bool requeue_or_delete_jobs(
     }
   return requeue_rc;
   }
+
+
 
 /*
  * mgr_node_delete - mark a node (or all nodes) in the server's node list
@@ -2031,12 +2104,20 @@ static void mgr_node_delete(
   all_nodes_iterator *iter = NULL;
 
   struct pbsnode *pnode;
-  const char    *nodename = NULL;
+  const char     *nodename = NULL;
 
 
   svrattrl       *plist;
 
   char            log_buf[LOCAL_LOG_BUF_SIZE];
+  bool            dont_update_nodes = false;
+
+  get_svr_attr_b(SRV_ATR_DontWriteNodesFile, &dont_update_nodes);
+  if (dont_update_nodes == true)
+    {
+    req_reject(PBSE_CANT_EDIT_NODES, 0, preq, NULL, NULL);
+    return;
+    }
 
   if ((*preq->rq_ind.rq_manager.rq_objname == '\0') ||
       (*preq->rq_ind.rq_manager.rq_objname == '@'))
@@ -2114,7 +2195,7 @@ static void mgr_node_delete(
 
     while ((pnode = next_host(&allnodes,&iter,NULL)) != NULL)
       {
-      snprintf(log_buf,sizeof(log_buf),"%s",pnode->nd_name);
+      snprintf(log_buf, sizeof(log_buf), "%s", pnode->get_name());
 
       effective_node_delete(&pnode);
 
@@ -2127,7 +2208,7 @@ static void mgr_node_delete(
   else
     {
     /* handle single nodes */
-    snprintf(log_buf,sizeof(log_buf),"%s",pnode->nd_name);
+    snprintf(log_buf, sizeof(log_buf), "%s", pnode->get_name());
 
     effective_node_delete(&pnode);
 
@@ -2177,9 +2258,17 @@ void mgr_node_create(
   struct batch_request *preq)
 
   {
-  int   bad;
+  int       bad;
   svrattrl *plist;
-  int   rc;
+  int       rc;
+  bool      dont_update_nodes = false;
+
+  get_svr_attr_b(SRV_ATR_DontWriteNodesFile, &dont_update_nodes);
+  if (dont_update_nodes == true)
+    {
+    req_reject(PBSE_CANT_EDIT_NODES, 0, preq, NULL, NULL);
+    return;
+    }
 
   plist = (svrattrl *)GET_NEXT(preq->rq_ind.rq_manager.rq_attr);
 
@@ -2258,7 +2347,6 @@ void mgr_node_create(
 
   return;
   }
-
 
 
 
@@ -2499,6 +2587,10 @@ int manager_oper_chk(
         err = PBSE_BADACLHOST;
         }
       }
+    else
+      {
+      err = PBSE_NONE;
+      }
     }
 
   return(err);
@@ -2600,6 +2692,67 @@ int extra_resc_chk(
 
   return(TRUE);
   }
+
+
+
+/*
+ * check_default_gpu_mode_str()
+ *
+ * Makes sure the default is a valid gpu mode
+ * @return PBSE_NONE on success of PBSE_ATTRTYPE if a bad value
+ */
+
+int check_default_gpu_mode_str(
+
+  pbs_attribute *pattr,
+  void          *pobj,
+  int actmode)
+
+  {
+  int   rc = PBSE_NONE;
+  char *gpu_mode = pattr->at_val.at_str;
+
+  switch (actmode)
+    {
+    case ATR_ACTION_ALTER:
+
+      // this shouldn't happen
+      if (gpu_mode == NULL)
+        {
+        return(PBSE_ATTRTYPE);
+        }
+
+      // Make sure it's one of the acceptable gpu modes
+      if (!strcmp(gpu_mode, "exclusive_thread"))
+        {
+        default_gpu_mode = gpu_exclusive_thread;
+        }
+      else if (!strcmp(gpu_mode, "exclusive"))
+        {
+        default_gpu_mode = gpu_exclusive;
+        }
+      else if (!strcmp(gpu_mode, "exclusive_process"))
+        {
+        default_gpu_mode = gpu_exclusive_process;
+        }
+      else if (!strcmp(gpu_mode, "default"))
+        {
+        default_gpu_mode = gpu_normal;
+        }
+      else if (!strcmp(gpu_mode, "shared"))
+        {
+        default_gpu_mode = gpu_normal;
+        }
+      else
+        rc = PBSE_ATTRTYPE;
+
+      break;
+    }
+
+  return(rc);
+  } // END check_default_gpu_mode_str()
+
+
 
 /*
  * free_extraresc() makes sure that the init_resc_defs() is called after

@@ -96,7 +96,6 @@ extern char cpuset_prefix[MAXPATHLEN];
 
 void get_cpu_list(const char *jobid, char *buf, int bufsize);
 #endif
-  
 
 
 
@@ -107,6 +106,7 @@ void get_cpu_list(const char *jobid, char *buf, int bufsize);
  * @pre-cond: str is a valid string pointer
  * @post-cond: internal variables representing cpus are populated
  */
+
 void numa_node::parse_cpu_string(
 
   std::string &line)
@@ -152,11 +152,6 @@ void numa_node::get_cpuinfo(
   if (path == NULL)
     return;
 
-  unsigned int       total_cpus;
-  unsigned long      total_memory;
-  unsigned long      available_memory;
-  unsigned int       available_cpus;
-
   std::string   line;
   std::ifstream myfile(path);
 
@@ -168,6 +163,8 @@ void numa_node::get_cpuinfo(
     parse_cpu_string(line);
     }
   }
+
+
 
 void numa_node::get_meminfo(
 
@@ -282,7 +279,7 @@ void numa_node::reserve(
   allocation    &alloc)
 
   {
-  snprintf(alloc.jobid, sizeof(alloc.jobid), "%s", jobid);
+  alloc.jobid = jobid;
   
   for (unsigned int i = 0; i < this->cpu_indices.size() && alloc.cpus < num_cpus; i++)
     {
@@ -332,7 +329,7 @@ void numa_node::recover_reservation(
   std::vector<int> indices;
   bool             matches_this_numa_node = false;
 
-  snprintf(alloc.jobid, sizeof(alloc.jobid), "%s", jobid);
+  alloc.jobid = jobid;
 
 #ifdef PENABLE_LINUX26_CPUSETS
   get_cpu_list(jobid, cpuset_buf, sizeof(cpuset_buf));
@@ -378,7 +375,7 @@ void numa_node::remove_job(
   {
   for (unsigned int i = 0; i < this->allocations.size(); i++)
     {
-    if (!strcmp(jobid, this->allocations[i].jobid))
+    if (this->allocations[i].jobid == jobid)
       {
       allocation a = this->allocations[i];
       this->available_cpus   += a.cpus;
@@ -411,7 +408,7 @@ void numa_node::get_job_indices(
   {
   for (unsigned int i = 0; i < this->allocations.size(); i++)
     {
-    if (!strcmp(jobid, this->allocations[i].jobid))
+    if (this->allocations[i].jobid == jobid)
       {
       if (cpus)
         {
@@ -454,16 +451,3 @@ unsigned int numa_node::get_my_index() const
   return(this->my_index);
   }
 
-allocation::allocation(
-
-  const allocation &alloc) : memory(alloc.memory), cpus(alloc.cpus), cpu_indices(alloc.cpu_indices)
-
-  {
-  strcpy(this->jobid, alloc.jobid);
-  }
-
-allocation::allocation() : memory(0), cpus(0), cpu_indices()
-
-  {
-  this->jobid[0] = '\0';
-  }

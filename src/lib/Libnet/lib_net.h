@@ -16,8 +16,7 @@ int get_connection_entry(int *conn_pos);
 
 /* from file get_hostaddr.c */
 char *PAddrToString(pbs_net_t *Addr);
-pbs_net_t get_hostaddr(int *, char *hostname);
-int get_hostaddr_hostent_af(int *, char *hostname, unsigned short *af_family, char **host_addr, int *host_addr_len);
+int get_hostaddr_hostent_af(int *, const char *hostname, unsigned short *af_family, char **host_addr, int *host_addr_len);
 
 /* from file get_hostname.c */
 int get_fullhostname(char *shortname, char *namebuf, int bufsize, char *EMsg);
@@ -39,8 +38,8 @@ int get_listen_socket(struct addrinfo *);
 int get_random_reserved_port();
 int socket_get_tcp_priv();
 int socket_connect_unix(int local_socket, const char *sock_name, char **err_msg);
-int socket_connect(int *local_socket, char *dest_addr, int dest_addr_len, int dest_port, int family, int is_privileged, std::string &err_msg);
-int socket_connect_addr(int *local_socket, struct sockaddr *remote, size_t remote_size, int is_privileged, std::string &err_msg);
+int socket_connect(int &local_socket, char *dest_addr, int dest_addr_len, int dest_port, int family, int is_privileged, std::string &err_msg);
+int socket_connect_addr(int &local_socket, struct sockaddr *remote, size_t remote_size, int is_privileged, std::string &err_msg);
 int socket_wait_for_write(int socket);
 int socket_wait_for_xbytes(int socket, int len);
 int socket_wait_for_read(int socket, unsigned int timeout);

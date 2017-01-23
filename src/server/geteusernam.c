@@ -86,6 +86,13 @@
 #include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _CRAY
+#include <udb.h>
+#endif /* _CRAY */
+#include "svrfunc.h" /* get_svr_attr_* */
+#include <string>
+#include <pthread.h>
+
 #include "server_limits.h"
 #include "list_link.h"
 #include "attribute.h"
@@ -96,16 +103,63 @@
 #include "log.h"
 #include "../lib/Liblog/pbs_log.h"
 #include "utils.h"
-#ifdef _CRAY
-#include <udb.h>
-#endif /* _CRAY */
-#include "svrfunc.h" /* get_svr_attr_* */
-#include <string>
+#include "pbs_ifl.h"
+
+pthread_mutex_t ruserok_mutex;
 
 /* External Data */
 
-extern char server_host[];
-extern int LOGLEVEL;
+extern char *msg_orighost;
+extern char  server_host[];
+
+
+
+int initialize_ruserok_mutex()
+  {
+  int rc;
+  
+  rc = pthread_mutex_init(&ruserok_mutex, NULL);
+  return(rc);
+  }
+
+
+
+bool is_permitted_by_node_submit(
+    
+  const char *orighost,
+  int         logging)
+
+  {
+  bool allow_node_submit = false;
+
+  get_svr_attr_b(SRV_ATR_AllowNodeSubmit, &allow_node_submit);
+
+  if ((allow_node_submit == TRUE) &&
+      (node_exists(orighost) == true))
+    {
+    /* job submitted from compute host, access allowed */
+    struct array_strings *arst = NULL;
+
+    get_svr_attr_arst(SRV_ATR_node_submit_exceptions, &arst);
+
+    if (arst != NULL)
+      {
+      // If we find this node's name in the disallowed nodes for submission, forbid it.
+      for (int i = 0; i < arst->as_usedptr; i++)
+        {
+        if (!strcmp(orighost, arst->as_string[i]))
+          {
+          return(false);
+          }
+        }
+      }
+
+    return(true);
+    }
+
+  return(false);
+  } // END is_permitted_by_node_submit()
+
 
 /*
  * geteusernam - get effective user name
@@ -118,12 +172,13 @@ extern int LOGLEVEL;
  */
 
 static bool geteusernam(
+
   job           *pjob,
   pbs_attribute *pattr,
   std::string&   ret_user) /* pointer to User_List pbs_attribute */
 
   {
-  int  rule3 = 0;
+  bool  rule3 = false;
   char *hit = 0;
   int  i;
 
@@ -167,14 +222,14 @@ static bool geteusernam(
 
     hit = pjob->ji_wattr[JOB_ATR_job_owner].at_val.at_str;
 
-    rule3 = 1;
+    rule3 = true;
     }
 
   /* copy user name into return buffer, strip off host name */
 
   get_jobowner(hit, username);
 
-  if (rule3)
+  if (rule3 == true)
     {
     ptr = site_map_user(username, get_variable(pjob, (char *)"PBS_O_HOST"));
 
@@ -185,8 +240,6 @@ static bool geteusernam(
   ret_user = username;
   return true;
   }  /* END geteusernam() */
-
-
 
 
 
@@ -202,6 +255,7 @@ static bool geteusernam(
  */
 
 bool getegroup(
+
   job           *pjob,  /* I */
   pbs_attribute *pattr,
   std::string&   ret_group) /* I group_list pbs_attribute */
@@ -261,6 +315,253 @@ bool getegroup(
   }  /* END getegroup() */
 
 
+/*
+ * get_user_host_from_user
+ *
+ * @param user_host  - receives the host name associated with the user.
+ * @param user       - user name with or without the host name.
+ *
+ */
+
+void get_user_host_from_user(
+    
+  std::string      &user_host,
+  const std::string user)
+
+  {
+  char  *ptr;
+  char  *tmp_name = strdup(user.c_str());
+
+  user_host.clear();
+  ptr = strchr(tmp_name, '@');
+  if (ptr != NULL)
+    {
+    ptr++;
+    user_host = ptr;
+    }
+
+  free(tmp_name);
+
+  }
+
+
+
+
+/*
+ * Verifies that the job's user is acceptable
+ *
+ * @return true if allowed, else false
+ */
+
+bool is_user_allowed_to_submit_jobs(
+
+  job        *pjob,    /* I */
+  const char *luser,   /* I */
+  char       *EMsg,    /* O optional */
+  int         logging) /* I */
+
+  {
+  char           *orighost;
+  std::string     user_host;  /* this is a back up to orighost in case we need FQDN */
+  std::string     user(pjob->ji_wattr[JOB_ATR_job_owner].at_val.at_str);
+  std::size_t     at_pos = user.find('@');
+  int             rc = PBSE_NONE;
+  bool            ProxyAllowed = false;
+  bool            ProxyRequested = false;
+  bool            HostAllowed = false;
+  char           *dptr;
+
+  char            log_buf[256];
+
+#ifdef MUNGE_AUTH
+  char            uh[PBS_MAXUSER + PBS_MAXHOSTNAME + 2];
+#endif
+    
+  if (LOGLEVEL >= 10)
+    {
+    sprintf(log_buf, "job id: %s - luser: %s", pjob->ji_qs.ji_jobid, luser);
+    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buf);
+    }
+    
+  if (EMsg != NULL)
+    EMsg[0] = '\0';
+
+  get_user_host_from_user(user_host, user);
+
+  if (at_pos != std::string::npos)
+    user.erase(at_pos);
+
+  orighost = get_variable(pjob, ATTR_pbs_o_host);
+
+  if (orighost == NULL)
+    {
+    /* access denied */
+
+    log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, pjob->ji_qs.ji_jobid, msg_orighost);
+
+    if (EMsg != NULL)
+      strcpy(EMsg, "source host not specified");
+
+    return(false);
+    }
+
+  /* check to see if we are allowing a proxy user to submit the job */
+  if ((server.sv_attr[SRV_ATR_AllowProxyUser].at_flags & ATR_VFLAG_SET) && \
+      (server.sv_attr[SRV_ATR_AllowProxyUser].at_val.at_bool == true))
+    {
+    ProxyAllowed = true;
+    }
+
+  /* If the users are different and allow_proxy_user is set we have a proxy submission */
+  if (strcmp(user.c_str(), luser) != 0)
+    {
+    ProxyRequested = true;
+    }
+
+  if (!strcmp(orighost, server_host) && !strcmp(user.c_str(), luser))
+    {
+    /* submitting from server host, access allowed */
+
+    if ((ProxyRequested == false) || (ProxyAllowed == true))
+      {
+      return(true);
+      }
+
+    /* host is fine, must validate proxy via ruserok() */
+
+    HostAllowed = true;
+    }
+
+  /* make short host name */
+  if ((dptr = strchr(orighost, '.')) != NULL)
+    {
+    *dptr = '\0';
+    }
+
+  if ((HostAllowed == false) &&
+      (is_permitted_by_node_submit(orighost, logging)))
+    {
+    /* job submitted from compute host, access allowed */
+    if (dptr != NULL)
+      *dptr = '.';
+
+    if ((ProxyRequested == false) ||
+        (ProxyAllowed == true))
+      {
+      return(true);
+      }
+
+    /* host is fine, must validate proxy via ruserok() */
+
+    HostAllowed = false;
+    }
+
+  if ((HostAllowed == false) &&
+      (server.sv_attr[SRV_ATR_SubmitHosts].at_flags & ATR_VFLAG_SET))
+    {
+    struct array_strings *submithosts = NULL;
+    char                 *testhost;
+    int                   hostnum = 0;
+
+    submithosts = server.sv_attr[SRV_ATR_SubmitHosts].at_val.at_arst;
+
+    for (hostnum = 0;hostnum < submithosts->as_usedptr;hostnum++)
+      {
+      testhost = submithosts->as_string[hostnum];
+
+      int cmpRet = strcasecmp(testhost, orighost);
+
+      if ((cmpRet != 0) &&
+          (dptr != NULL))
+        {
+        *dptr = '.';
+        cmpRet = strcasecmp(testhost, orighost);
+        *dptr = '\0';
+        }
+
+      if (cmpRet == 0)
+        {
+        /* job submitted from host found in trusted submit host list, access allowed */
+
+        if (dptr != NULL)
+          *dptr = '.';
+
+        if ((ProxyRequested == false) ||
+            (ProxyAllowed == true))
+          {
+          return(true);
+          }
+
+        /* host is fine, must validate proxy via ruserok() */
+
+        HostAllowed = true;
+
+        break;
+        }
+      }  /* END for (hostnum) */
+    }    /* END if (SRV_ATR_SubmitHosts) */
+
+  // Check limited acls
+  if (limited_acls.is_authorized(orighost, user) == true)
+    return(true);
+  else if (limited_acls.is_authorized(user_host.c_str(), user) == true)
+    return(true);
+
+  if (dptr != NULL)
+    *dptr = '.';
+
+#ifdef MUNGE_AUTH
+  sprintf(uh, "%s@%s", user.c_str(), orighost);
+  rc = acl_check(&server.sv_attr[SRV_ATR_authusers], uh, ACL_User_Host);
+  if (rc <= 0)
+    {
+    /* rc == 0 means we did not find a match.
+       this is a failure */
+    if (EMsg != NULL)
+      {
+      snprintf(EMsg, 1024, "could not authorize user %s from %s",
+        user.c_str(), orighost);
+      }
+    rc = -1; /* -1 is what set_jobexid is expecting for a failure*/
+    }
+  else
+    {
+    /*SUCCESS*/
+    rc = 0; /* the call to ruserok below was in the code first. ruserok returns 
+               0 on success but acl_check returns a positive value on success. 
+               We set rc to 0 to be consistent with the original ruserok functionality */
+    }
+#else
+
+  /* ruserok is the last chance the incoming submission can work. 
+     check to see if the user hosts combination is allowed */
+  /* ruserok is not thread safe. mutex it */
+  pthread_mutex_lock(&ruserok_mutex);
+  rc = ruserok(orighost, 0, user.c_str(), luser);
+  pthread_mutex_unlock(&ruserok_mutex);
+
+  if (rc != 0)
+    {
+    /* Test rc so as to not fill this message in the case of success, since other
+     * callers might not fill this message in the case of their errors and
+     * very misleading error message will go into the logs.
+     */
+    if (EMsg != NULL)
+      snprintf(EMsg, 1024, "ruserok failed validating %s/%s from %s",
+        user.c_str(), luser, orighost);
+    rc = -1;
+    }
+#endif
+
+#ifdef sun
+  /* broken Sun ruserok() sets process so it appears to be owned */
+  /* by the luser, change it back for cosmetic reasons           */
+
+  setuid(0);
+#endif /* sun */
+
+  return(rc == 0);
+  } // END is_user_allowed_to_submit_jobs()
 
 
 
@@ -292,6 +593,7 @@ int set_jobexid(
   pbs_attribute  *pattr;
   char          **pmem;
 
+  char           *grp_buf = NULL;
   struct group   *gpent;
   std::string    puser = "";
   char           *at;
@@ -300,6 +602,7 @@ int set_jobexid(
 
 
   struct passwd  *pwent = NULL;
+  char           *buf = NULL;
   std::string      pgrpn = "";
   char            gname[PBS_MAXGRPN + 1];
 #ifdef _CRAY
@@ -310,20 +613,18 @@ int set_jobexid(
   char            tmpLine[1024 + 1];
   char            log_buf[LOCAL_LOG_BUF_SIZE];
 
-  long            disable_id_check = 0;
-  int             CheckID;  /* boolean */
-
+  bool            disable_id_check = false;
+  bool            CheckID = true;  
+  
   if (EMsg != NULL)
     EMsg[0] = '\0';
 
   /* use the passed User_List if set, may be a newly modified one     */
   /* if not set, fall back to the job's actual User_List, may be same */
-  if (get_svr_attr_l(SRV_ATR_DisableServerIdCheck, &disable_id_check) != PBSE_NONE)
-    CheckID = 1;
-  else
+  if (get_svr_attr_b(SRV_ATR_DisableServerIdCheck, &disable_id_check) == PBSE_NONE)
     CheckID = !disable_id_check;
 
-  if (CheckID == 0)
+  if (CheckID == false)
     {
     /* NOTE: use owner, not userlist - should this be changed? */
     /* Yes, changed 10/17/2007 */
@@ -380,7 +681,7 @@ int set_jobexid(
       {
       strcpy(tmpLine, "???");
       }
-    }  /* END if (CheckID == 0) */
+    }  /* END if (CheckID == false) */
   else
     {
     int perm;
@@ -398,7 +699,7 @@ int set_jobexid(
       return(PBSE_BADUSER);
       }
 
-    pwent = getpwnam_ext((char *)puser.c_str());
+    pwent = getpwnam_ext(&buf, (char *)puser.c_str());
 
     perm = svr_get_privilege((char *)puser.c_str(),get_variable(pjob,(char *)"PBS_O_HOST"));
 
@@ -427,7 +728,8 @@ int set_jobexid(
         {
         puser = pjob->ji_wattr[JOB_ATR_proxy_user].at_val.at_str;
 
-        pwent = getpwnam_ext((char *)puser.c_str());
+        free_pwnam(pwent, buf);
+        pwent = getpwnam_ext(&buf, (char *)puser.c_str());
 
         if (pwent == NULL)
           {
@@ -473,6 +775,7 @@ int set_jobexid(
             snprintf(EMsg, 1024, "root user %s fails ACL check",
                      puser.c_str());
 
+          free_pwnam(pwent, buf);
           return(PBSE_BADUSER); /* root not allowed */
           }
         }
@@ -482,6 +785,7 @@ int set_jobexid(
           snprintf(EMsg, 1024, "root user %s not allowed",
                    puser.c_str());
           
+        free_pwnam(pwent, buf);
         return(PBSE_BADUSER); /* root not allowed */
         }
       }    /* END if (pwent->pw_uid == 0) */
@@ -501,17 +805,19 @@ int set_jobexid(
         puser.c_str(),
         pjob->ji_wattr[JOB_ATR_proxy_user].at_val.at_str);
       log_err(PBSE_BADUSER, __func__, log_buf);
-          
+
+      free_pwnam(pwent, buf);
       return(PBSE_BADUSER);
       }
 
-    if (site_check_user_map(pjob, (char *)puser.c_str(), EMsg, LOGLEVEL) == -1)
+    if (is_user_allowed_to_submit_jobs(pjob, puser.c_str(), EMsg, LOGLEVEL) == false)
       {
+      free_pwnam(pwent, buf);
       return(PBSE_BADUSER);
       }
 
     snprintf(tmpLine, sizeof(tmpLine), "%s", puser.c_str());
-    }  /* END else (CheckID == 0) */
+    }  /* END else (CheckID == false) */
 
   pattr = attrry + JOB_ATR_euser;
 
@@ -535,11 +841,13 @@ int set_jobexid(
         snprintf(EMsg, 1024, "user %s not located in user data base",
                  puser.c_str());
 
+      free_pwnam(pwent, buf);
       return(PBSE_BADUSER);
       }
 
     if (pudb->ue_permbits & (PERMBITS_NOBATCH | PERMBITS_RESTRICTED))
       {
+      free_pwnam(pwent, buf);
       return(PBSE_QACESS);
       }
 
@@ -575,17 +883,21 @@ int set_jobexid(
 
   /* extract user-specified egroup if it exists */
 
-  if(!getegroup(pjob, pattr,pgrpn))
+  if (!getegroup(pjob, pattr,pgrpn))
     {
-    if ((pwent != NULL) || ((pwent = getpwnam_ext((char *)puser.c_str())) != NULL))
+    free_pwnam(pwent, buf);
+    pwent = NULL;
+    if ((pwent != NULL) || ((pwent = getpwnam_ext(&buf, (char *)puser.c_str())) != NULL))
       {
       /* egroup not specified - use user login group */
 
-      gpent = getgrgid(pwent->pw_gid);
+      gpent = getgrgid_ext(&grp_buf, pwent->pw_gid);
 
       if (gpent != NULL)
         {
         pgrpn = gpent->gr_name;           /* use group name */
+        free(grp_buf);
+        free(gpent);
         }
       else
         {
@@ -595,7 +907,7 @@ int set_jobexid(
         pgrpn = gname;            /* turn gid into string */
         }
       }
-    else if (CheckID == 0)
+    else if (CheckID == false)
       {
       strcpy(gname, "???");
 
@@ -608,6 +920,7 @@ int set_jobexid(
       if (EMsg != NULL)
         snprintf(EMsg, 1024, "user does not exist in server password file");
 
+      free_pwnam(pwent, buf);
       return(PBSE_BADUSER);
       }
 
@@ -620,7 +933,7 @@ int set_jobexid(
 
     addflags = ATR_VFLAG_DEFLT;
     }  /* END if ((pgrpn = getegroup(pjob,pattr))) */
-  else if (CheckID == 0)
+  else if (CheckID == false)
     {
     /* egroup specified - do not validate group within server */
 
@@ -631,7 +944,7 @@ int set_jobexid(
     /* user specified a group, group must exist and either */
     /* must be user's primary group or the user must be in it */
 
-    gpent = getgrnam_ext((char *)pgrpn.c_str());
+    gpent = getgrnam_ext(&grp_buf, (char *)pgrpn.c_str());
 
     if (gpent == NULL)
       {
@@ -639,6 +952,7 @@ int set_jobexid(
         snprintf(EMsg, 1024, "cannot locate group %s in server group file",
           pgrpn.c_str());
 
+      free_pwnam(pwent, buf);
       return(PBSE_BADGRP);  /* no such group */
       }
 
@@ -669,9 +983,12 @@ int set_jobexid(
         if (EMsg != NULL)
           snprintf(EMsg, 1024, "%s",log_buf);
 
+        free_pwnam(pwent, buf);
+        free_grname(gpent, grp_buf);
         return(PBSE_BADGRP); /* user not in group */
         }
       }
+    free_grname(gpent, grp_buf);
     }    /* END if ((pgrpn = getegroup(pjob,pattr))) */
 
   /* set new group */
@@ -685,9 +1002,46 @@ int set_jobexid(
   pattr->at_flags |= addflags;
 
   /* SUCCESS */
+  free_pwnam(pwent, buf);
   return(PBSE_NONE);
 
   }  /* END set_jobexid() */
+
+
+
+/*
+ * node_exception_check()
+ *
+ */
+
+int node_exception_check(
+
+  pbs_attribute *pattr,
+  void          *pobject,
+  int            actmode)
+
+  {
+  struct array_strings *pstr;
+
+  if (actmode == ATR_ACTION_FREE)
+    {
+    return(PBSE_NONE); /* no checking on free */
+    }
+
+  pstr = pattr->at_val.at_arst;
+
+  for (int i = 0; pstr != NULL && i < pstr->as_usedptr; i++)
+    {
+    if (node_exists(pstr->as_string[i]) == false)
+      {
+      return(PBSE_UNKNODE);
+      }
+    }
+
+  return(PBSE_NONE);
+  } // END node_exception_check()
+
+
 
 /* END geteusernam.c */
 

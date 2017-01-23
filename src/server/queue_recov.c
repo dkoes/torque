@@ -106,7 +106,7 @@
 #include "log.h"
 #include "../lib/Liblog/pbs_log.h"
 #include "../lib/Liblog/log_event.h"
-#include "../lib/Libifl/lib_ifl.h"
+#include "lib_ifl.h"
 #include "utils.h"
 #include <pthread.h>
 #include "queue_func.h" /* que_alloc, que_free */
@@ -230,6 +230,8 @@ pbs_queue *que_recov_xml(
   char        *end;
   char         log_buf[LOCAL_LOG_BUF_SIZE];
   time_t       time_now = time(NULL);
+
+  memset(&buf, 0, sizeof(buf));
 
   pq = que_alloc(filename, TRUE);  /* allocate & init queue structure space */
 

@@ -98,6 +98,7 @@
 #include "array.h"
 #include "utils.h"
 #include "svrfunc.h" /* get_svr_attr_* */
+#include "pbs_helper.h"
 
 extern struct server server;
 
@@ -723,7 +724,7 @@ resource_def svr_resc_def_const[] =
   { "gattr", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
   { "geometry", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
   { "gmetric", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
-  { "gres", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE | ATR_DFLAG_MOM | ATR_DFLAG_RMOMIG, ATR_TYPE_STR },
+  { "gres", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE | ATR_DFLAG_ALTRUN | ATR_DFLAG_MOM | ATR_DFLAG_RMOMIG, ATR_TYPE_STR },
   { "hostlist", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
   { "image", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
   { "jgroup", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
@@ -769,7 +770,7 @@ resource_def svr_resc_def_const[] =
   { "wcrequeue", decode_str, encode_str, set_str, comp_str, free_str, NULL_FUNC, READ_WRITE, ATR_TYPE_STR },
   { "cpuclock", decode_frequency, encode_frequency, set_frequency, comp_frequency, free_null, NULL_FUNC, READ_WRITE | ATR_DFLAG_MOM , ATR_TYPE_FREQ},    /* cpu frequency to run  job at */
   { "energy_used", decode_l, encode_l, set_l, comp_l, free_null, NULL_FUNC, NO_USER_SET | ATR_DFLAG_MOM, ATR_TYPE_LONG},
-
+  { "maxmem", decode_size, encode_size, set_size, comp_size, free_null, NULL_FUNC, READ_WRITE | ATR_DFLAG_ALTRUN, ATR_TYPE_SIZE},
 
   /* the definition for the "unknown" resource MUST be last */
 
@@ -962,11 +963,11 @@ int decode_nodes(
 
 int ctnodes(
 
-  char *spec)
+  const char *spec)
 
   {
-  int   ct = 0;
-  char *pc;
+  int         ct = 0;
+  const char *pc;
 
   while (1)
     {
@@ -994,7 +995,7 @@ int ctnodes(
 
 long count_proc(
 
-  char *param_spec)
+  const char *param_spec)
 
   {
   long  num_nodes = 0;
@@ -1004,6 +1005,10 @@ long count_proc(
   char *ppnloc;
   char *spec;
   char *spec_ptr;
+
+  // if we get a null param spec, just return 0 procs
+  if (param_spec == NULL)
+    return(0);
 
   if ((spec = strdup(param_spec)) == NULL)
     return(-1);
@@ -1063,6 +1068,11 @@ int set_node_ct(
 
     return(0);
     }
+  
+  // WARNING: we are potentially re-sizing the vector in the calls to add_resource_entry()
+  // below. All attempts to use pnodesp after the calls to add_resource_entry may be using an
+  // invalid pointer, so copy data here
+  std::string nodes_val(pnodesp->rs_value.at_val.at_str);
 
   /* Set "nodect" to count of nodes in "nodes" */
 
@@ -1081,7 +1091,7 @@ int set_node_ct(
       }
     }
 
-  pnct->rs_value.at_val.at_long = ctnodes(pnodesp->rs_value.at_val.at_str);
+  pnct->rs_value.at_val.at_long = ctnodes(nodes_val.c_str());
 
   pnct->rs_value.at_flags |= ATR_VFLAG_SET;
 
@@ -1106,7 +1116,7 @@ int set_node_ct(
     pndef->rs_free(&pnct->rs_value);
     }
 
-  pndef->rs_decode(&pnct->rs_value, NULL, NULL, pnodesp->rs_value.at_val.at_str, ATR_DFLAG_ACCESS);
+  pndef->rs_decode(&pnct->rs_value, NULL, NULL, nodes_val.c_str(), ATR_DFLAG_ACCESS);
 
   pnct->rs_value.at_flags |= ATR_VFLAG_SET;
 
@@ -1137,12 +1147,12 @@ int set_node_ct(
 
   if ((pprocsp = find_resc_entry(pattr, pprocsdef)) == NULL)
     {
-    ppct->rs_value.at_val.at_long = count_proc(pnodesp->rs_value.at_val.at_str);
+    ppct->rs_value.at_val.at_long = count_proc(nodes_val.c_str());
     }
   else
     { 
     ppct->rs_value.at_val.at_long = pprocsp->rs_value.at_val.at_long;
-    ppct->rs_value.at_val.at_long += count_proc(pnodesp->rs_value.at_val.at_str);
+    ppct->rs_value.at_val.at_long += count_proc(nodes_val.c_str());
     }
 
   ppct->rs_value.at_flags |= ATR_VFLAG_SET;
@@ -1274,9 +1284,9 @@ int set_tokens_nodect(
 
 int set_mppnodect(
 
-  resource      *res,
+  resource      * UNUSED(res),
   pbs_attribute *attr,
-  int            op)
+  int             UNUSED(op))
 
   {
   int           width;
@@ -1364,10 +1374,10 @@ int set_mppnodect(
 int decode_procct(
 
   pbs_attribute *patr,
-  const char  *name,  /* pbs_attribute name */
-  const char *rescn,  /* resource name, unused here */
+  const char * UNUSED(name),  /* pbs_attribute name */
+  const char * UNUSED(rescn),  /* resource name, unused here */
   const char    *val,  /* pbs_attribute value */
-  int            perm) /* only used for resources */
+  int          UNUSED(perm)) /* only used for resources */
 
   {
     const char *pc;
@@ -1402,17 +1412,42 @@ int decode_procct(
   }
 
 
-
 int encode_procct(
 
   pbs_attribute  *attr,   /* ptr to pbs_attribute */
   tlist_head     *phead,  /* head of attrlist list */
   const char    *atname, /* pbs_attribute name */
   const char    *rsname, /* resource name or null */
-  int             mode,   /* encode mode, unused here */
-  int             perm)   /* only used for resources */
+  int            UNUSED(mode),   /* encode mode, unused here */
+  int            UNUSED(perm))   /* only used for resources */
 
   {
-  return (0);
+  size_t   ct;
+  char   cvnbuf[32];
+  svrattrl *pal;
+
+  if (!attr)
+    return (-1);
+
+  if (!(attr->at_flags & ATR_VFLAG_SET))
+    return (0);
+
+  sprintf(cvnbuf, "%ld", attr->at_val.at_long);
+
+  ct = strlen(cvnbuf);
+
+  pal = attrlist_create(atname, rsname, ct + 1);
+
+  if (pal == (svrattrl *)0)
+    return (-1);
+
+  memcpy(pal->al_value, cvnbuf, ct);
+
+  pal->al_flags = attr->at_flags;
+
+  append_link(phead, &pal->al_link, pal);
+
+  return (1);
   }
+
 

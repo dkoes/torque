@@ -89,6 +89,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <sstream>
 
@@ -96,21 +97,24 @@
 #include "mom_config.h"
 #include "dis.h"
 #include "mom_func.h"
-#include "u_tree.h"
+#include "authorized_hosts.hpp"
 #include "csv.h"
+#include "json/json.h"
 
-void encode_used(job *pjob, int perm, std::stringstream *list, tlist_head *phead);
-void encode_flagged_attrs(job *pjob, int perm, std::stringstream *list, tlist_head *phead);
+void encode_used(job *pjob, int perm, Json::Value *, tlist_head *phead);
+void encode_flagged_attrs(job *pjob, int perm, Json::Value *job_info, tlist_head *phead);
 
 /* these are the global variables we set or don't set as a result of the config file.
  * They should be externed in mom_config.h */
-int              thread_unlink_calls = FALSE;
+bool             thread_unlink_calls = true;
 /* by default, enforce these policies */
 int              ignwalltime = 0; 
 int              ignmem = 0;
 int              igncput = 0;
 int              ignvmem = 0; 
 /* end policies */
+bool             check_rur = true; /* on by default */
+bool             force_file_overwrite = false;
 int              spoolasfinalname = 0;
 int              maxupdatesbeforesending = MAX_UPDATES_BEFORE_SENDING;
 char            *apbasil_path     = NULL;
@@ -148,6 +152,7 @@ int              is_login_node   = FALSE;
 int              job_exit_wait_time = DEFAULT_JOB_EXIT_WAIT_TIME;
 char             jobstarter_exe_name[MAXPATHLEN + 1];
 int              jobstarter_set = 0;
+int              jobstarter_privileged = 0;
 char            *server_alias = NULL;
 char            *TRemChkptDirList[TMAX_RCDCOUNT];
 char             tmpdir_basename[MAXPATHLEN];  /* for $TMPDIR */
@@ -160,9 +165,10 @@ char           **maskclient = NULL; /* wildcard connections */
 char             MOMConfigVersion[64];
 int              MOMConfigDownOnError      = 0;
 int              MOMConfigRestart          = 0;
+int              MOMCudaVisibleDevices     = 1;
 double           wallfactor = 1.00;
-struct cphosts  *pcphosts = NULL;
-unsigned int     pe_alarm_time = PBS_PROLOG_TIME;
+std::vector<cphosts> pcphosts;
+long             pe_alarm_time = PBS_PROLOG_TIME;
 char             DEFAULT_UMASK[1024];
 char             PRE_EXEC[1024];
 int              src_login_batch = TRUE;
@@ -182,7 +188,7 @@ short            memory_pressure_duration  = 0; /* 0: off, >0: check and kill */
 int              max_join_job_wait_time = MAX_JOIN_WAIT_TIME;
 int              resend_join_job_wait_time = RESEND_WAIT_TIME;
 int              mom_hierarchy_retry_time = NODE_COMM_RETRY_TIME;
-
+std::string      presetup_prologue;
 
 
 
@@ -195,9 +201,7 @@ extern char         PBSNodeMsgBuf[MAXLINE];
 extern long         MaxConnectTimeout;
 extern char        *path_log;
 extern tlist_head   mom_varattrs; /* variable attributes */
-extern AvlTree      okclients;  /* accept connections from */
 extern int          mom_server_count;
-extern tlist_head   svr_alljobs; /* all jobs under MOM's control */
 extern time_t       time_now;
 extern int          internal_state;
 extern int          MOMJobDirStickySet;
@@ -209,11 +213,13 @@ extern int            numa_index;
 /* external functions */
 int      mom_server_add(const char *name);
 ssize_t read_ac_socket(int fd, void *buf, ssize_t count);
-struct passwd *getpwnam_ext(char *user_name);
+extern void free_pwnam(struct passwd *pwdp, char *buf);
+struct passwd *getpwnam_ext(char **user_buffer, char *user_name);
 
 /* NOTE:  must adjust RM_NPARM in resmom.h to be larger than number of parameters
           specified below */
-
+unsigned long setforceoverwrite(const char*);
+unsigned long setrur(const char *);
 unsigned long setxauthpath(const char *);
 unsigned long setrcpcmd(const char *);
 unsigned long setpbsclient(const char *);
@@ -268,6 +274,7 @@ unsigned long setremchkptdirlist(const char *);
 unsigned long setmaxconnecttimeout(const char *);
 unsigned long aliasservername(const char *);
 unsigned long jobstarter(const char *value);
+unsigned long setjobstarterprivileged(const char *);
 #ifdef PENABLE_LINUX26_CPUSETS
 unsigned long setusesmt(const char *);
 unsigned long setmempressthr(const char *);
@@ -290,8 +297,11 @@ unsigned long setmaxjoinjobwaittime(const char *);
 unsigned long setresendjoinjobwaittime(const char *);
 unsigned long setmomhierarchyretrytime(const char *);
 unsigned long setjobdirectorysticky(const char *);
+unsigned long setcudavisibledevices(const char *);
+unsigned long set_presetup_prologue(const char *);
 
 struct specials special[] = {
+  { "force_overwrite",     setforceoverwrite}, 
   { "alloc_par_cmd",       setallocparcmd },
   { "auto_ideal_load",     setautoidealload },
   { "auto_max_load",       setautomaxload },
@@ -347,6 +357,7 @@ struct specials special[] = {
   { "max_conn_timeout_micro_sec",   setmaxconnecttimeout },
   { "alias_server_name", aliasservername },
   { "job_starter", jobstarter},
+  { "job_starter_run_privileged", setjobstarterprivileged},
 #ifdef PENABLE_LINUX26_CPUSETS
   { "use_smt",                      setusesmt      },
   { "memory_pressure_threshold",    setmempressthr },
@@ -370,6 +381,9 @@ struct specials special[] = {
   { "resend_join_job_wait_time", setresendjoinjobwaittime},
   { "mom_hierarchy_retry_time",  setmomhierarchyretrytime},
   { "jobdirectory_sticky", setjobdirectorysticky},
+  { "cuda_visible_devices", setcudavisibledevices},
+  { "cray_check_rur",       setrur },
+  { "presetup_prologue",    set_presetup_prologue},
   { NULL,                  NULL }
   };
 
@@ -472,7 +486,36 @@ char *tokcpy(
   return(str);
   }  /* END tokcpy() */
 
+unsigned long setforceoverwrite(
+  
+  const char *value)
 
+  {
+  int enable;
+
+  if ((enable = setbool(value)) != -1)
+    {
+    force_file_overwrite = enable;
+    return(1);
+    }
+
+  return(0); /* error */
+  }
+unsigned long setrur(
+
+  const char *value)
+  
+  {
+  int enable;
+
+  if ((enable = setbool(value)) != -1)
+    {
+    check_rur = enable;
+    return(1);
+    }
+    
+  return(0); /* error */
+  }/* end setrur() */
 
 
 unsigned long setidealload(
@@ -930,9 +973,9 @@ unsigned long setthreadunlinkcalls(
   if (!strncasecmp(value,"t",1) ||
       (value[0] == '1') ||
       (!strcasecmp(value,"on")))
-    thread_unlink_calls = TRUE;
+    thread_unlink_calls = true;
   else
-    thread_unlink_calls = FALSE;
+    thread_unlink_calls = false;
 
   return(1);
   } /* END setthreadunlinkcalls() */
@@ -1115,7 +1158,10 @@ unsigned long setapbasilprotocol(
          (value[2] != '1') &&
          (value[2] != '2') &&
          (value[2] != '3') &&
-         (value[2] != '4')))
+         (value[2] != '4') &&
+         (value[2] != '5') &&
+         (value[2] != '6') &&
+         (value[2] != '7')))
       {
       snprintf(log_buffer, sizeof(log_buffer), 
         "Value must be 1.[0-4] but is %s", value);
@@ -1266,6 +1312,29 @@ unsigned long jobstarter(const char *value)  /* I */
 
 
 
+/********************************************************
+ *  setjobstarterprivileged - enable/disable the jobstarter
+ *  to run with elevated privileges
+ *
+ *  Returns: 1
+ *******************************************************/
+unsigned long setjobstarterprivileged(
+
+  const char *value)  /* I */
+
+  {
+  int enable;
+
+  log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, value);
+
+  if ((enable = setbool(value)) != -1)
+    jobstarter_privileged = enable;
+
+  return(1);
+  }  /* END setjobstarter_privileged() */
+
+
+
 unsigned long setremchkptdirlist(
 
   const char *value)  /* I */
@@ -1356,7 +1425,7 @@ u_long addclient(
 
   ipaddr = ntohl(saddr.s_addr);
 
-  okclients = AVL_insert(ipaddr, 0, NULL, okclients);
+  auth_hosts.add_authorized_address(ipaddr, 0, "");
   
   return(ipaddr);
   }  /* END addclient() */
@@ -1405,7 +1474,7 @@ u_long setjoboomscoreadjust(
   v = atoi(value);
 
   /* check for allowed value range */
-  if( v >= -17 && v <= 15 ) 
+  if( v >= -1000 && v <= 1000 ) 
     {
     job_oom_score_adjust = v;
     /* ok */
@@ -1805,9 +1874,8 @@ u_long usecp(
 
   {
   char        *pnxt;
-  static int   cphosts_max = 0;
 
-  struct cphosts   *newp = NULL;
+  cphosts cph;
 
   /* FORMAT:  <HOST>:<FROM> <TO> */
 
@@ -1816,45 +1884,6 @@ u_long usecp(
    */
 
   log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, value);
-
-  if (cphosts_max == 0)
-    {
-    pcphosts = (struct cphosts *)calloc(2, sizeof(struct cphosts));
-
-    if (pcphosts == NULL)
-      {
-      sprintf(log_buffer, "%s: out of memory while allocating pcphosts",
-        __func__);
-
-      log_err(-1, __func__, log_buffer);
-
-      return(0);
-      }
-
-    cphosts_max = 2;
-    }
-  else if (cphosts_max == cphosts_num)
-    {
-    newp = (struct cphosts *)realloc(
-      pcphosts,
-      (cphosts_max + 2) * sizeof(struct cphosts));
-
-    if (newp == NULL)
-      {
-      /* FAILURE */
-
-      sprintf(log_buffer,"%s: out of memory while reallocating pcphosts",
-        __func__);
-
-      log_err(-1, __func__, log_buffer);
-
-      return(0);
-      }
-
-    pcphosts = newp;
-
-    cphosts_max += 2;
-    }
 
   pnxt = strchr((char *)value, (int)':');
 
@@ -1872,19 +1901,7 @@ u_long usecp(
 
   *pnxt++ = '\0';
 
-  pcphosts[cphosts_num].cph_hosts = strdup(value);
-
-  if (pcphosts[cphosts_num].cph_hosts == NULL)
-    {
-    /* FAILURE */
-
-    sprintf(log_buffer, "%s: out of memory in strdup(cph_hosts)",
-      __func__);
-
-    log_err(-1, __func__, log_buffer);
-
-    return(0);
-    }
+  cph.cph_hosts = value;
 
   value = pnxt; /* now ptr to path */
 
@@ -1899,8 +1916,6 @@ u_long usecp(
 
       log_err(-1, __func__, log_buffer);
 
-      free(pcphosts[cphosts_num].cph_hosts);
-
       return(0);
       }
 
@@ -1909,60 +1924,37 @@ u_long usecp(
 
   *pnxt++ = '\0';
 
-  pcphosts[cphosts_num].cph_from = strdup(value);
+  cph.cph_from = value;
+  cph.cph_to = skipwhite(pnxt);
 
-  if (pcphosts[cphosts_num].cph_from == NULL)
-    {
-    sprintf(log_buffer, "%s: out of memory in strdup(cph_from)",
-      __func__);
-
-    log_err(-1, __func__, log_buffer);
-
-    free(pcphosts[cphosts_num].cph_hosts);
-
-    return(0);
-    }
-
-  pcphosts[cphosts_num].cph_to = strdup(skipwhite(pnxt));
-
-  if (pcphosts[cphosts_num].cph_to == NULL)
-    {
-    sprintf(log_buffer, "%s: out of memory in strdup(cph_to)",
-      __func__);
-
-    log_err(-1, __func__, log_buffer);
-
-    free(pcphosts[cphosts_num].cph_hosts);
-    free(pcphosts[cphosts_num].cph_from);
-
-    return(0);
-    }
-
-  cphosts_num++;
+  pcphosts.push_back(cph);
 
   return(1);
   }  /* END usecp() */
 
 
 
+/*
+ * prologalarm()
+ */
 
 unsigned long prologalarm(
 
   const char *value)  /* I */
 
   {
-  int i;
+  long i;
 
   log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, value);
 
-  i = (int)atoi(value);
+  i = strtol(value, NULL, 10);
 
   if (i <= 0)
     {
     return(0); /* error */
     }
 
-  pe_alarm_time = (unsigned int)i;
+  pe_alarm_time = (long)i;
 
   return(1);
   }  /* END prologalarm() */
@@ -2228,6 +2220,106 @@ void add_static(
   return;
   }  /* END add_static() */
 
+
+
+/*
+ * reset_config_vars() - reset all config variables to defaults
+ *
+ * When pbs_mom receives a HUP signal, the configuration file
+ * needs to be reloaded. In order for that to be successful,
+ * all the global variables need to be reset to their default state.
+ */
+void reset_config_vars()
+  {
+  thread_unlink_calls = FALSE;
+  /* by default, enforce these policies */
+  ignwalltime = 0;
+  ignmem = 0;
+  igncput = 0;
+  ignvmem = 0; 
+  /* end policies */
+  spoolasfinalname = 0;
+  maxupdatesbeforesending = MAX_UPDATES_BEFORE_SENDING;
+  apbasil_path     = NULL;
+  apbasil_protocol = NULL;
+  reject_job_submit = 0;
+  attempttomakedir = 0;
+  reduceprologchecks = 0;
+  CheckPollTime = CHECK_POLL_TIME;
+  cputfactor = 1.00;
+  ideal_load_val = -1.0;
+  exec_with_exec = 0;
+  ServerStatUpdateInterval = DEFAULT_SERVER_STAT_UPDATES;
+  max_load_val = -1.0;
+  auto_ideal_load = NULL;
+  auto_max_load   = NULL;
+  AllocParCmd = NULL;  /* (alloc) */
+  PBSNodeCheckPath[0] = '\0';
+  PBSNodeCheckProlog = 0;
+  PBSNodeCheckEpilog = 0;
+  PBSNodeCheckInterval = 1;
+  job_oom_score_adjust = 0;  /* no oom score adjust by default */
+  mom_oom_immunize = 1;  /* make pbs_mom processes immune? no by default */
+  log_file_max_size = 0;
+  log_file_roll_depth = 1;
+  LOGKEEPDAYS = 0; /* days each log file should be kept before deleting */
+  EXTPWDRETRY = 3; /* # of times to try external pwd check */
+  nodefile_suffix = NULL;    /* suffix to append to each host listed in job host file */
+  submithost_suffix = NULL;  /* suffix to append to submithost for interactive jobs */
+  mom_host[0] = '\0';
+  hostname_specified = 0;
+  MOMConfigRReconfig = 0;
+  TNoSpoolDirList[0] = '\0';
+  is_reporter_mom = FALSE;
+  is_login_node = FALSE;
+  job_exit_wait_time = DEFAULT_JOB_EXIT_WAIT_TIME;
+  jobstarter_exe_name[0] = '\0';
+  jobstarter_set = 0;
+  server_alias = NULL;
+  TRemChkptDirList[0] = '\0';
+  tmpdir_basename[0] = '\0';  /* for $TMPDIR */
+  rcp_path[0] = '\0';
+  rcp_args[0] = '\0';
+  xauth_path[0] = '\0';
+  mask_num = 0;
+  mask_max = 0;
+  maskclient = NULL; /* wildcard connections */
+  memset(MOMConfigVersion, 0, sizeof(MOMConfigVersion));
+  MOMConfigDownOnError = 0;
+  MOMConfigRestart = 0;
+  MOMCudaVisibleDevices = 1;
+  wallfactor = 1.00;
+  pcphosts.clear();
+  pe_alarm_time = PBS_PROLOG_TIME;
+  DEFAULT_UMASK[0] = '\0';
+  PRE_EXEC[0] = '\0';
+  src_login_batch = TRUE;
+  src_login_interactive = TRUE;
+  TJobStartBlockTime = 5; /* seconds to wait for job to launch before backgrounding */
+  strncpy(config_file, "config", sizeof(config_file));
+  config_file_specified = 0;
+  config_array = NULL;
+  #ifdef PENABLE_LINUX26_CPUSETS
+  MOMConfigUseSMT = 1; /* 0: off, 1: on */
+  memory_pressure_threshold = 0; /* 0: off, >0: check and kill */
+  memory_pressure_duration  = 0; /* 0: off, >0: check and kill */
+  #endif
+  max_join_job_wait_time = MAX_JOIN_WAIT_TIME;
+  resend_join_job_wait_time = RESEND_WAIT_TIME;
+  mom_hierarchy_retry_time = NODE_COMM_RETRY_TIME;
+  LOGLEVEL = 0;
+  
+  // Clear varattrs
+  struct varattr *pva;
+ 
+  while ((pva = (struct varattr *)GET_NEXT(mom_varattrs)) != NULL)
+    {
+    delete_link(&pva->va_link);
+    
+    free(pva->va_cmd);
+    free(pva);
+    }
+  } // END reset_config_vars()
 
 
 
@@ -2644,6 +2736,34 @@ unsigned long setmomhierarchyretrytime(
 
 
 
+unsigned long set_presetup_prologue(
+
+  const char *value)
+
+  {
+  log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, __func__, value);
+
+  if (value != NULL)
+    {
+    presetup_prologue = value;
+    if (presetup_prologue[0] != '/')
+      {
+      sprintf(log_buffer, "$presetup_prologue must be given an absolute path, but received '%s'",
+        value);
+      log_err(-1, __func__, log_buffer);
+
+      presetup_prologue.clear();
+
+      // FIXME: For some reason, these things use 0 for error. 
+      return(0);
+      }
+    }
+
+  return(1);
+  } // END set_presetup_prologue()
+
+
+
 const char *arch(
 
   struct rm_attribute *attrib)  /* I */
@@ -2744,15 +2864,13 @@ const char *reqmsg(
 
 void add_job_status_information(
 
-  job               &pjob,
-  std::stringstream &list)
+  job         &pjob,
+  Json::Value &job_info)
 
   {
-  list << "(";
-  encode_used(&pjob, ATR_DFLAG_MGRD, &list, NULL); /* adds resources_used attr */
+  encode_used(&pjob, ATR_DFLAG_MGRD, &job_info, NULL); /* adds resources_used attr */
 
-  encode_flagged_attrs(&pjob, ATR_DFLAG_MGRD, &list, NULL); /* adds other flagged attrs */
-  list << ")";
+  encode_flagged_attrs(&pjob, ATR_DFLAG_MGRD, &job_info, NULL); /* adds other flagged attrs */
   } /* END add_job_status_information() */
 
 
@@ -2762,19 +2880,15 @@ const char *getjoblist(
   struct rm_attribute *attrib) /* I */
 
   {
-  std::stringstream  list;
+  Json::Value        job_list;
   job               *pjob;
-  bool               firstjob = true;
 
 #ifdef NUMA_SUPPORT
   char  mom_check_name[PBS_MAXSERVERNAME];
   char *dot;
 #endif 
 
-  // reset the job list
-  list.clear();
-
-  if ((pjob = (job *)GET_NEXT(svr_alljobs)) == NULL)
+  if (alljobs_list.size() == 0)
     {
     /* no jobs - return space character */
 
@@ -2791,33 +2905,29 @@ const char *getjoblist(
   sprintf(mom_check_name + strlen(mom_check_name),"-%d/",numa_index);
 #endif
 
-  for (;pjob != NULL;pjob = (job *)GET_NEXT(pjob->ji_alljobs))
+  std::list<job *>::iterator iter;
+
+  for (iter = alljobs_list.begin(); iter != alljobs_list.end(); iter++)
     {
+    pjob = *iter;
+
 #ifdef NUMA_SUPPORT
     /* skip over jobs that aren't on this node */
     if (strstr(pjob->ji_wattr[JOB_ATR_exec_host].at_val.at_str,mom_check_name) == NULL)
       continue;
 #endif
 
-    if (!firstjob)
-      list << " ";
-    
-    firstjob = false;
-
-    list << pjob->ji_qs.ji_jobid;
+    Json::Value job_info;
 
     if (am_i_mother_superior(*pjob) == true)
       {
-      add_job_status_information(*pjob, list);
+      add_job_status_information(*pjob, job_info);
       }
+
+    job_list[pjob->ji_qs.ji_jobid] = job_info;
     }  /* END for (pjob) */
 
-#ifdef NUMA_SUPPORT
-  if (firstjob == true)
-    list << " ";
-#endif
-
-  return(strdup(list.str().c_str()));
+  return(strdup(job_list.toStyledString().c_str()));
   }  /* END getjoblist() */
 
 
@@ -2918,6 +3028,7 @@ const char *reqvarattr(
       else
         {
         fd = fileno(child);
+        fcntl(fd, F_SETFL, O_NONBLOCK);
 
         child_spot = tmpBuf;
         child_len  = 0;
@@ -2940,12 +3051,12 @@ const char *reqvarattr(
         if (len == -1)
           {
           /* FAILURE - cannot read var script output */
-          log_err(errno, __func__, "pipe read");
+          log_err(errno, __func__, "Cannot read pipe for reqvarattr script. Please check!");
 
           sprintf(pva->va_value, "? %d",
             RM_ERR_SYSTEM);
 
-          pclose(child);
+          // Do not plose here as it will hang until the child exits.
 
           continue;
           }
@@ -3012,8 +3123,6 @@ const char *reqvarattr(
 
   return(list);
   }  /* END reqvarattr() */
-
-
 
 
 
@@ -3107,9 +3216,12 @@ const char *reqgres(
       strncat(GResBuf, "+", sizeof(GResBuf) - 1 - strlen(GResBuf));
       }
 
-    snprintf(tmpLine, 1024, "%s:%s",
-             cp->c_name,
-             cp->c_u.c_value);
+    {
+      // check if shell escape needed
+      char *p = conf_res(cp->c_u.c_value, NULL);
+      snprintf(tmpLine, 1024, "%s:%s",
+               cp->c_name, p);
+    }
 
     strncat(GResBuf, tmpLine, (sizeof(GResBuf) - strlen(GResBuf) - 1));
     }  /* END for (cp) */
@@ -3171,6 +3283,7 @@ const char *validuser(
 
   {
   struct passwd *p;
+  char          *buf;
 
   if ((attrib == NULL) || (attrib->a_value == NULL))
     {
@@ -3180,14 +3293,29 @@ const char *validuser(
     return(NULL);
     }
 
-  p = getpwnam_ext(attrib->a_value);
+  p = getpwnam_ext(&buf, attrib->a_value);
 
   if (p != NULL)
     {
+    free_pwnam(p, buf);
     return("yes");
     }
 
   return("no");
   }    /* END validuser() */
 
+u_long setcudavisibledevices(
+
+  const char *value)  /* I */
+
+  {
+  int enable;
+
+  log_record(PBSEVENT_SYSTEM, PBS_EVENTCLASS_SERVER, "cudavisibledevices", value);
+
+  if ((enable = setbool(value)) != -1)
+    MOMCudaVisibleDevices = enable;
+
+  return(1);
+  }  /* END setcudavisibledevices() */
 

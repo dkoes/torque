@@ -97,6 +97,57 @@
 #include "server_limits.h"
 
 
+/*
+ * set_pbs_errno_from_dis_errcode()
+ *
+ * Takes the error code from DIS and sets the appropriate PBSE_* error; the error code is passed through
+ * if it isn't a DIS error
+ *
+ * @param local_errno - a pointer to the error code we are setting
+ * @param dis_errcode - the error code we're passing in
+ */
+
+void set_pbs_errno_from_dis_errcode(
+    
+  int *local_errno,
+  int  dis_errcode)
+
+  {
+  switch (dis_errcode)
+    {
+    case DIS_OVERFLOW:
+    case DIS_HUGEVAL:
+    case DIS_BADSIGN:
+    case DIS_LEADZRO:
+    case DIS_NONDIGIT:
+    case DIS_NULLSTR:
+    case DIS_EOD:
+    case DIS_PROTO:
+    case DIS_NOCOMMIT:
+    case DIS_INVALID:
+
+      *local_errno = PBSE_PROTOCOL;
+      break;
+
+    case DIS_NOMALLOC:
+
+      *local_errno = PBSE_MEM_MALLOC;
+      break;
+
+    case DIS_EOF:
+
+      *local_errno = PBSE_EOF;
+      break;
+
+    default:
+
+      *local_errno = dis_errcode;
+      break;
+    }
+
+  } // END set_pbs_errno_from_dis_errcode()
+
+
 
 struct batch_reply *PBSD_rdrpy(
 
@@ -104,12 +155,12 @@ struct batch_reply *PBSD_rdrpy(
   int  c)           /* I */
 
   {
-  int      rc;
+  int          rc;
 
-  struct batch_reply *reply;
-  int      sock;
-  const char    *the_msg = NULL;
-  struct tcp_chan *chan = NULL;
+  batch_reply *reply;
+  int          sock;
+  const char  *the_msg = NULL;
+  tcp_chan    *chan = NULL;
   
   if ((c < 0) || 
       (c >= PBS_NET_MAX_CONNECTIONS))
@@ -149,10 +200,14 @@ struct batch_reply *PBSD_rdrpy(
     if (chan->IsTimeout == TRUE)
       {
       *local_errno = PBSE_TIMEOUT;
+      rc = PBSE_TIMEOUT;
       }
-    else
+
+    set_pbs_errno_from_dis_errcode(local_errno, rc);
+
+    if ((the_msg = pbs_strerror(*local_errno)) != NULL)
       {
-      *local_errno = PBSE_PROTOCOL;
+      connection[c].ch_errtxt = strdup(the_msg);
       }
 
     connection[c].ch_errno = *local_errno;

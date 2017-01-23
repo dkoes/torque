@@ -57,7 +57,7 @@ PbsErrClient(PBSE_REGROUTE,          (char *)"Dependent parent job currently in 
 /* unknown signal name */
 PbsErrClient(PBSE_UNKSIG,            (char *)"Unknown/illegal signal name")
 /* bad attribute value */
-PbsErrClient(PBSE_BADATVAL,          (char *)"Illegal attribute or resource value for ")
+PbsErrClient(PBSE_BADATVAL,          (char *)"Illegal attribute or resource value for")
 /* Cannot modify attrib in run state */
 PbsErrClient(PBSE_MODATRRUN,         (char *)"Cannot modify attribute while job running ")
 /* request invalid for job state */
@@ -282,7 +282,22 @@ PbsErrClient(PBSE_CREATE_NOT_ALLOWED_WITH_MOM_HIERARCHY, (char *)"Nodes may not 
 PbsErrClient(PBSE_HIERARCHY_NOT_SENT, (char *)"The updated okclients list hasn't been sent out to the cluster yet. The node(s) will automatically update to free once this is done and the mom has reported in.")
 PbsErrClient(PBSE_MOM_TIMED_OUT_ON_REQUEUE, (char *)"The server was unable to communicate with the MOM to requeue or delete the job. The node has been deleted and all jobs on the node have been purged.")
 PbsErrClient(PBSE_BAD_JOB_STATE_TRANSITION, (char *)"The requested state or substate can't be set from the job's current state.")
-
+PbsErrClient(PBSE_CGROUPS_NOT_ENABLED, (char *)"Cgroups are not enabled on this node.")
+PbsErrClient(PBSE_RESC_CONFLICT, (char *)"This job's resource request conflicts with the queue's default resources.")
+PbsErrClient(PBSE_UNALTERABLE_ATTR, (char *)"The requested attribute cannot be altered after submission.")
+PbsErrClient(PBSE_NO_PROCESS_RANK, (char *)"A process rank was not given. will add process to job cgroup.")
+PbsErrClient(PBSE_REQ_NOT_FOUND, (char *)"A req for this host was not found")
+PbsErrClient(PBSE_INDICES_EMPTY, (char *)"The cpuset or memset indices are not set")
+PbsErrClient(PBSE_EMPTY, (char *)"The container is empty")
+PbsErrClient(PBSE_MINLIMIT, (char *)"Request doesn't meet minimum limit")
+PbsErrClient(PBSE_CANT_EDIT_NODES, (char *)"With dont_write_nodes_file set you can't edit nodes via qmgr.")
+PbsErrClient(PBSE_GHOSTQUEUE, (char *)"This queue had errors during its recovery. Please correct any settings that were lost on restart and then unset the ghost_queue setting via qmgr. Once this is unset, then the queue will be able to accept new jobs again.") 
+PbsErrClient(PBSE_GPU_NOT_INITIALIZED, (char *)"NVIDIA GPU not initialized")
+PbsErrClient(PBSE_UNSUPPORTED_DEVICE_VERSION, (char *)"Unsupported device version")
+PbsErrClient(PBSE_CGROUP_CREATE_FAIL, (char *)"Could not create all of the cgroups for this job.")
+PbsErrClient(PBSE_EOF, (char *)"This stream has already been closed. End of File.")
+PbsErrClient(PBSE_GPU_PROHIBITED_MODE, (char *)"Invalid gpu mode requested. Prohibited mode is not allowed. Check the spelling of the mode request for errors")
+PbsErrClient(PBSE_NODE_DELETED,      (char *)"Node was deleted during work")
 /* pbs client errors ceiling (max_client_err + 1) */
 PbsErrClient(PBSE_CEILING,           (char*)0)
 #endif

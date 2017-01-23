@@ -1,5 +1,7 @@
-SUBDIRS = mom_mach mom_start pe_input numa_node node_internals sys_file
+SUBDIRS = numa_node node_internals 
 if BUILD_L26_CPUSETS
 SUBDIRS += cpuset
 endif
 
+cleancheck:
+	@for dir in $(SUBDIRS); do (cd $$dir && $(MAKE) clean); done

@@ -116,7 +116,11 @@ extern int set_tokens (struct pbs_attribute *attr, struct pbs_attribute *new_att
 extern int extra_resc_chk (pbs_attribute * pattr, void *pobject, int actmode);
 extern void free_extraresc (pbs_attribute * attr);
 extern void restore_attr_default (struct pbs_attribute *);
-
+int         update_user_acls(pbs_attribute *pattr, void *pobject, int actmode);
+int         update_group_acls(pbs_attribute *pattr, void *pobject, int actmode);
+int         node_exception_check(pbs_attribute *pattr, void *pobject, int actmode);
+int         check_default_gpu_mode_str(pbs_attribute *pattr, void *pobject, int actmode);
+extern int  keep_completed_val_check(pbs_attribute *pattr,void *pobj,int actmode);
 /* DIAGTODO: write diag_attr_def.c */
 
 /*
@@ -154,7 +158,7 @@ attribute_def svr_attr_def[] =
     },
 
   /* SRV_ATR_scheduling */
-  { (char *)ATTR_scheduling,
+  { (char *)ATTR_scheduling, /* "scheduling" */
     decode_b,
     encode_b,
     set_b,
@@ -162,7 +166,7 @@ attribute_def svr_attr_def[] =
     free_null,
     poke_scheduler,
     NO_USER_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER,
   },
 
@@ -240,7 +244,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -266,7 +270,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -285,6 +289,19 @@ attribute_def svr_attr_def[] =
 
   /* SRV_ATR_AclRoot */  /* List of which roots may execute jobs */
   { (char *)ATTR_aclroot,  /* "acl_roots"    */
+    decode_arst,
+    encode_arst,
+    set_uacl,
+    comp_arst,
+    free_arst,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_ACL,
+    PARENT_TYPE_SERVER
+  },
+
+  /* SRV_ATR_Gres_modifiers */  /* List of users who may modify the GRES for their own running jobs */
+  { (char *)ATTR_gresmodifiers,  /* "acl_users" */
     decode_arst,
     encode_arst,
     set_uacl,
@@ -370,7 +387,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -539,7 +556,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -578,7 +595,7 @@ attribute_def svr_attr_def[] =
     restore_attr_default,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -604,7 +621,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -617,7 +634,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -630,7 +647,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -643,7 +660,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -656,7 +673,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -669,7 +686,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -721,7 +738,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       NO_USER_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -734,7 +751,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       NO_USER_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -745,7 +762,7 @@ attribute_def svr_attr_def[] =
       set_l,
       comp_l,
       free_null,
-      NULL_FUNC,
+      keep_completed_val_check,//in svr_func.c line 657
       NO_USER_SET,
       ATR_TYPE_LONG,
       PARENT_TYPE_SERVER
@@ -773,7 +790,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       NO_USER_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -786,7 +803,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       NO_USER_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   },
 
@@ -799,7 +816,7 @@ attribute_def svr_attr_def[] =
       free_null,
       NULL_FUNC,
       MGR_ONLY_SET,
-      ATR_TYPE_LONG,
+      ATR_TYPE_BOOL,
       PARENT_TYPE_SERVER
   }, 
 
@@ -995,7 +1012,7 @@ attribute_def svr_attr_def[] =
     	free_null,
     	NULL_FUNC,
     	MGR_ONLY_SET,
-    	ATR_TYPE_LONG,
+    	ATR_TYPE_BOOL,
     	PARENT_TYPE_SERVER
   },
 
@@ -1021,7 +1038,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -1035,6 +1052,19 @@ attribute_def svr_attr_def[] =
     NULL_FUNC,
     MGR_ONLY_SET,
     ATR_TYPE_STR,
+    PARENT_TYPE_SERVER
+  },
+
+  /* SRV_ATR_use_jobs_subdirs */
+  { (char *)ATTR_usejobssubdirs, /* "use_jobs_subdirs" */
+    decode_b,
+    encode_b,
+    set_b,
+    comp_b,
+    free_null,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER
   },
 
@@ -1163,7 +1193,7 @@ attribute_def svr_attr_def[] =
      free_null,
      NULL_FUNC,
      MGR_ONLY_SET,
-     ATR_TYPE_LONG,
+     ATR_TYPE_BOOL,
      PARENT_TYPE_SERVER
   },
 
@@ -1176,7 +1206,7 @@ attribute_def svr_attr_def[] =
      free_null,
      NULL_FUNC,
      MGR_ONLY_SET,
-     ATR_TYPE_LONG,
+     ATR_TYPE_BOOL,
      PARENT_TYPE_SERVER
   },
 
@@ -1271,7 +1301,7 @@ attribute_def svr_attr_def[] =
   },
 
   /* SRV_ATR_MoabArrayCompatible */
-  {ATTR_moabarraycompatible,
+  {ATTR_moabarraycompatible, /* moab_array_compatible */
    decode_b,
    encode_b,
    set_b,
@@ -1279,7 +1309,7 @@ attribute_def svr_attr_def[] =
    free_null,
    NULL_FUNC,
    NO_USER_SET,
-   ATR_TYPE_LONG,
+   ATR_TYPE_BOOL,
    PARENT_TYPE_SERVER
   },
 
@@ -1292,7 +1322,7 @@ attribute_def svr_attr_def[] =
    free_null,
    NULL_FUNC,
    MGR_ONLY_SET,
-   ATR_TYPE_LONG,
+   ATR_TYPE_BOOL,
    PARENT_TYPE_SERVER},
 
   /* SRV_ATR_CrayEnabled */
@@ -1304,7 +1334,7 @@ attribute_def svr_attr_def[] =
    free_null,
    NULL_FUNC,
    MGR_ONLY_SET,
-   ATR_TYPE_LONG,
+   ATR_TYPE_BOOL,
    PARENT_TYPE_SERVER},
 
   /* SRV_ATR_InteractiveJobsCanRoam */ /* NOTE: this only has effect if pbs_server is cray enabled */
@@ -1316,7 +1346,7 @@ attribute_def svr_attr_def[] =
    free_null,
    NULL_FUNC,
    MGR_ONLY_SET,
-   ATR_TYPE_LONG,
+   ATR_TYPE_BOOL,
    PARENT_TYPE_SERVER},
 
   /* SRV_ATR_MaxUserQueuable */
@@ -1376,7 +1406,7 @@ attribute_def svr_attr_def[] =
    free_null,
    NULL_FUNC,
    MGR_ONLY_SET,
-   ATR_TYPE_LONG,
+   ATR_TYPE_BOOL,
    PARENT_TYPE_SERVER},
 
   /* SRV_ATR_job_full_report_time */
@@ -1405,7 +1435,7 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER},
 
    /* SRV_ATR_JobExclusiveOnUse */
@@ -1417,7 +1447,208 @@ attribute_def svr_attr_def[] =
     free_null,
     NULL_FUNC,
     MGR_ONLY_SET,
-    ATR_TYPE_LONG,
+    ATR_TYPE_BOOL,
     PARENT_TYPE_SERVER},
+
+  /* SRV_ATR_DisableAutoRequeue */
+  {(char *)ATTR_disable_automatic_requeue, /* "disable_automatic_requeue" */
+   decode_b,
+   encode_b,
+    set_b,
+    comp_b,
+    free_null,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_BOOL,
+    PARENT_TYPE_SERVER},
+
+  /* SRV_ATR_ExitCodeCanceledJob */
+   {(char *)ATTR_exitcodecanceledjob, /* "exit_code_canceled_job" */
+    decode_l,
+    encode_l,
+     set_l,
+     comp_l,
+     free_null,
+     NULL_FUNC,
+     MGR_ONLY_SET,
+     ATR_TYPE_LONG,
+     PARENT_TYPE_SERVER},
+
+    /* SRV_ATR_TimeoutForJobDelete */
+    {(char *)ATTR_timeoutforjobdelete, /* "timeout_for_job_delete" */
+     decode_l,
+     encode_l,
+      set_l,
+      comp_l,
+      free_null,
+      NULL_FUNC,
+      MGR_ONLY_SET,
+      ATR_TYPE_LONG,
+      PARENT_TYPE_SERVER},
+
+    /* SRV_ATR_TimeoutForJobRequeue */
+    {(char *)ATTR_timeoutforjobrequeue, /* "timeout_for_job_requeue" */
+     decode_l,
+     encode_l,
+      set_l,
+      comp_l,
+      free_null,
+      NULL_FUNC,
+      MGR_ONLY_SET,
+      ATR_TYPE_LONG,
+      PARENT_TYPE_SERVER},
+
+    /* SRV_ATR_DontWriteNodesFile */
+    {(char *)ATTR_dontwritenodesfile, /* "dont_write_nodes_file" */
+     decode_b,
+     encode_b,
+     set_b,
+     comp_b,
+     free_null,
+     NULL_FUNC,
+     MGR_ONLY_SET,
+     ATR_TYPE_BOOL,
+     PARENT_TYPE_SERVER},
+
+  /* SRV_ATR_acl_users_hosts */
+  { (char *)ATTR_aclusershosts,  /* "acl_user_hosts" */
+    decode_arst,
+    encode_arst,
+    set_hostacl,
+    comp_arst,
+    free_arst,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_ACL,
+    PARENT_TYPE_SERVER
+  },
+
+  /* SRV_ATR_acl_groups_hosts */
+  { (char *)ATTR_aclgroupshosts,  /* "acl_group_hosts" */
+    decode_arst,
+    encode_arst,
+    set_hostacl,
+    comp_arst,
+    free_arst,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_ACL,
+    PARENT_TYPE_SERVER
+  },
+
+  /* SRV_ATR_node_submit_exceptions */
+  { (char *)ATTR_nodesubmitexceptions,  /* "node_submit_exceptions" */
+    decode_arst,
+    encode_arst,
+    set_arst,
+    comp_arst,
+    free_arst,
+    node_exception_check,
+    MGR_ONLY_SET,
+    ATR_TYPE_ACL,
+    PARENT_TYPE_SERVER
+  },
+
+  // SRV_ATR_LegacyVmem 
+  {(char *)ATTR_legacy_vmem, // "legacy_vmem"
+   decode_b,
+   encode_b,
+   set_b,
+   comp_b,
+   free_null,
+   NULL_FUNC,
+   MGR_ONLY_SET,
+   ATR_TYPE_BOOL,
+   PARENT_TYPE_SERVER},
+
+  /* SRV_ATR_NoteAppendOnError*/
+  {   (char *)ATTR_note_append_on_error, /* "note_append_on_error" */
+      decode_b,
+      encode_b,
+      set_b,
+      comp_b,
+      free_null,
+      NULL_FUNC,
+      MGR_ONLY_SET,
+      ATR_TYPE_BOOL,
+      PARENT_TYPE_SERVER
+  },
+
+  // SRV_ATR_EmailBatchSeconds
+  {(char *)ATTR_email_batch_seconds, // "email_batch_seconds"
+   decode_l,
+   encode_l,
+   set_l,
+   comp_l,
+   free_null,
+   NULL_FUNC,
+   MGR_ONLY_SET,
+   ATR_TYPE_LONG,
+   PARENT_TYPE_SERVER},
+
+  // SRV_ATR_tcp_incoming_timeout
+  {(char *)ATTR_tcpincomingtimeout,         /* "tcp_incoming_timeout" */
+  decode_l,
+  encode_l,
+  set_l,
+  comp_l,
+  free_null,
+  NULL_FUNC,
+  NO_USER_SET,
+  ATR_TYPE_LONG,
+  PARENT_TYPE_SERVER
+  },
+   
+  // SRV_ATR_GhostArrayRecovery
+  {(char *)ATTR_ghost_array_recovery, /* "ghost_array_recovery" */
+    decode_b,
+    encode_b,
+    set_b,
+    comp_b,
+    free_null,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_BOOL,
+    PARENT_TYPE_SERVER
+  },
+
+  // SRV_ATR_CgroupPerTask
+  {(char *)ATTR_cgroup_per_task, /* "cgroup_per_task" */
+    decode_b,
+    encode_b,
+    set_b,
+    comp_b,
+    free_null,
+    NULL_FUNC,
+    MGR_ONLY_SET,
+    ATR_TYPE_LONG,
+    PARENT_TYPE_SERVER
+  },
+
+  // SRV_ATR_IdleSlotLimit
+  {(char *)ATTR_idle_slot_limit, // "idle_slot_limit"
+   decode_l,
+   encode_l,
+   set_l,
+   comp_l,
+   free_null,
+   NULL_FUNC,
+   MGR_ONLY_SET,
+   ATR_TYPE_LONG,
+   PARENT_TYPE_SERVER
+  },
+
+  // SRV_ATR_DefaultGpuMode
+  {(char *)ATTR_default_gpu_mode, // "default_gpu_mode"
+   decode_str,
+   encode_str,
+   set_str,
+   comp_str,
+   free_null,
+   check_default_gpu_mode_str,
+   MGR_ONLY_SET,
+   ATR_TYPE_STR,
+   PARENT_TYPE_SERVER
+  },
 
   };
