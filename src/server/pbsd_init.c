@@ -137,6 +137,7 @@
 #include "id_map.hpp"
 #include "exiting_jobs.h"
 #include "mom_hierarchy_handler.h"
+#include "policy_values.h"
 
 
 /*#ifndef SIGKILL*/
@@ -2220,8 +2221,9 @@ void setup_threadpool()
 void set_server_policies()
 
   {
-  bool cray = false;
-  bool recover_subjobs = false;
+  bool  cray = false;
+  bool  recover_subjobs = false;
+  char *default_gpu_str = NULL;
 
   if (get_svr_attr_b(SRV_ATR_CrayEnabled, &cray) == PBSE_NONE)
     cray_enabled = cray;
@@ -2229,6 +2231,8 @@ void set_server_policies()
   if (get_svr_attr_b(SRV_ATR_GhostArrayRecovery, &recover_subjobs) == PBSE_NONE)
     ghost_array_recovery = recover_subjobs;
 
+  if (get_svr_attr_str(SRV_ATR_DefaultGpuMode, &default_gpu_str) == PBSE_NONE)
+    set_default_gpu_mode_int(default_gpu_str);
   } // END set_server_policies()
 
 
@@ -2769,7 +2773,6 @@ void check_jobs_queue(
 
   {
   std::string queue_name(pjob->ji_qs.ji_queue);
-  std::string job_id(pjob->ji_qs.ji_jobid);
 
   unlock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
 
@@ -2794,8 +2797,9 @@ void check_jobs_queue(
     }
 
   unlock_queue(pque, __func__, NULL, LOGLEVEL);
-
-  pjob = svr_find_job(job_id.c_str(), TRUE);
+ 
+  // The job hasn't been queued, so we just re-lock it this way
+  lock_ji_mutex(pjob, __func__, "1", LOGLEVEL);
   } // END check_jobs_queue()
 
 

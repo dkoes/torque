@@ -2,6 +2,7 @@
 #define __MACHINE_HPP__
 #include <string>
 #include <vector>
+#include <set>
 #include <sstream>
 #include <hwloc.h>
 #ifdef NVIDIA_GPUS
@@ -141,12 +142,14 @@ class Chip
     Chip();
     Chip(int execution_slots, int &es_remainder, int &per_numa_remainder);
     Chip(const Json::Value &layout, std::vector<std::string> &valid_ids);
+    Chip(const std::string &legacy_layout, std::vector<std::string> &valid_ids);
     Chip(const Chip &other);
     Chip &operator=(const Chip &other);
     ~Chip();
     int get_id() const;
     int getTotalCores() const;
     int getTotalThreads() const;
+    int get_total_gpus() const;
     int getAvailableCores() const;
     int getAvailableThreads() const;
     hwloc_uint64_t getAvailableMemory() const;
@@ -166,6 +169,9 @@ class Chip
     void parse_values_from_json_string(const Json::Value &layout, std::string &cores,
                                        std::string &threads, std::string &gpus, std::string &mics,
                                        std::vector<std::string> &valid_ids);
+    void legacy_parse_values_from_json_string(const std::string &legacy_layout, std::string &cores,
+                                       std::string &threads, std::string &gpus, std::string &mics,
+                                       std::vector<std::string> &valid_ids);
 
 #ifdef NVIDIA_GPUS
   #ifdef NVML_API
@@ -182,7 +188,7 @@ class Chip
     void setCores(int cores); // used for unit tests
     void setThreads(int threads); // used for unit tests
     void setChipAvailable(bool available);
-    float  how_many_tasks_fit(const req &r, int place_type) const;
+    double how_many_tasks_fit(const req &r, int place_type) const;
     bool has_socket_exclusive_allocation() const;
     bool task_will_fit(const req &r, int place_type) const;
     int  free_core_count() const;
@@ -207,6 +213,8 @@ class Chip
     int  reserve_accelerator(int type);
     void free_accelerators(allocation &a);
     void free_accelerator(int index, int type);
+    void legacy_initialize_allocations(char *layout, std::vector<std::string> &valid_ids);
+    void legacy_initialize_allocation(char *layout, std::vector<std::string> &valid_ids);
     void initialize_allocations(const Json::Value &layout, std::vector<std::string> &valid_ids);
     void initialize_allocation(const Json::Value &layout, std::vector<std::string> &valid_ids);
     void aggregate_allocation(allocation &a);
@@ -222,6 +230,7 @@ class Chip
     bool reserve_chip_thread(int core_index, allocation &a);
     bool reserve_place_thread(int core_index, allocation &a);
     bool reserve_chip_place_thread(int core_index, allocation &a);
+    void save_allocations(const Chip &other);
   };
 
 
@@ -246,6 +255,7 @@ class Socket
     Socket();
     Socket(int execution_slots, int numa_nodes, int &es_remainder);
     Socket(const Json::Value &layout, std::vector<std::string> &valid_ids);
+    Socket(const std::string &legacy_layout, std::vector<std::string> &valid_ids);
     ~Socket();
     Socket &operator=(const Socket &other);
     int initializeSocket(hwloc_obj_t obj);
@@ -254,6 +264,8 @@ class Socket
     int getTotalChips() const;
     int getTotalCores() const;
     int getTotalThreads() const;
+    int get_total_gpus() const;
+    int get_available_gpus() const;
     int getAvailableChips() const;
     int getAvailableCores() const;
     int get_free_cores() const;
@@ -269,7 +281,7 @@ class Socket
     void displayAsJson(Json::Value &out, bool include_jobs) const;
     void setId(int id);
     void addChip(); // used for unit tests
-    float how_many_tasks_fit(const req &r, int place_type) const;
+    double how_many_tasks_fit(const req &r, int place_type) const;
     void place_all_execution_slots(req &r, allocation &task_alloc);
     bool spread_place(req &r, allocation &master, int execution_slots_per, int &remainder, bool chips);
     bool spread_place_pu(req &r, allocation &task_alloc, int &cores, int &lprocs, int &gpus, int &mics);
@@ -283,6 +295,7 @@ class Socket
     void update_internal_counts(vector<allocation> &allocs);
     int  get_gpus_remaining();
     int  get_mics_remaining();
+    void save_allocations(const Socket &other);
   };
 
 
@@ -307,11 +320,12 @@ class Machine
   vector<allocation>  allocations;
 #ifdef NVIDIA_GPUS
   #ifdef NVML_API
-  hwloc_obj_t get_non_nvml_device(hwloc_topology_t topology, nvmlDevice_t device);
+  hwloc_obj_t get_non_nvml_device(hwloc_topology_t topology, nvmlDevice_t device, std::set<hwloc_obj_t> &);
   #endif
 #endif
     
   void initialize_from_json(const string &json_str, vector<string> &valid_ids);
+  int  legacy_initialize_from_json(const string &json_str, vector<string> &valid_ids);
 
   public:
     Machine& operator=(const Machine& newMachine);
@@ -328,6 +342,7 @@ class Machine
     int getTotalChips() const;
     int getTotalCores() const;
     int getTotalThreads() const;
+    int get_total_gpus() const;
     int getAvailableSockets() const;
     int getAvailableChips() const;
     int getAvailableMemory() const;
@@ -346,12 +361,12 @@ class Machine
     void place_all_execution_slots(req &r, allocation &master, const char *hostname);
     int  spread_place(req &r, allocation &master, int tasks_for_node, const char *hostname);
     int  spread_place_pu(req &r, allocation &master, int tasks_for_node, const char *hostname);
-    int  place_job(job *pjob, string &cpu_string, string &mem_string, const char *hostname, bool legacy_vmem);
+    int  place_job(job *pjob, cgroup_info &cgi, const char *hostname, bool legacy_vmem);
     void setMemory(long long mem); 
     void addSocket(int count); // used for unit tests
     void setIsNuma(bool is_numa); // used for unit tests
+    void save_allocations(const Machine &other);
     void free_job_allocation(const char *jobid);
-    int  get_jobs_cpusets(const char *jobid, string &cpus, string &mems);
     int  fit_tasks_within_sockets(req &r, allocation &job_alloc, const char *hostname, int &remaining_tasks);
     void place_remaining(req &to_split, allocation &master, int &remaining_tasks, const char *hostname);
     int  how_many_tasks_can_be_placed(req &r) const;
@@ -360,6 +375,7 @@ class Machine
     bool check_if_possible(int &sockets, int &numa_nodes, int &cores, int &threads) const;
     bool is_initialized() const;
     void reinitialize_from_json(const std::string &json_layout, std::vector<std::string> &valid_ids);
+    void clear();
   };
 
 extern Machine this_node;

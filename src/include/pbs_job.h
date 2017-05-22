@@ -436,6 +436,8 @@ enum job_atr
   JOB_ATR_memset_string,
   JOB_ATR_user_kill_delay,
   JOB_ATR_idle_slot_limit,
+  JOB_ATR_gpus_reserved,
+  JOB_ATR_mics_reserved,
   JOB_ATR_UNKN,  /* the special "unknown" type    */
   JOB_ATR_LAST  /* This MUST be LAST */
   };
@@ -842,6 +844,7 @@ class job
 
   void encode_plugin_resource_usage(tlist_head *phead) const;
   void add_plugin_resource_usage(std::string &acct_data) const;
+  size_t number_of_plugin_resources() const;
   };
 #endif
 
@@ -1307,7 +1310,7 @@ job         *job_clone(job *,struct job_array *, int, bool);
 job         *svr_find_job(const char *jobid, int get_subjob);
 job         *svr_find_job_by_id(int internal_job_id);
 job         *find_job_by_array(all_jobs *aj, const char *job_id, int get_subjob, bool locked);
-bool         job_id_exists(const std::string &job_id_string, int *rcode);
+bool         job_id_exists(const std::string &job_id_string);
 bool         internal_job_id_exists(int internal_id);
 #else
 extern job  *mom_find_job(const char *);
@@ -1337,6 +1340,8 @@ bool   have_reservation(job *, struct pbs_queue *);
 
 int lock_ji_mutex(job *pjob, const char *id, const char *msg, int logging);
 int unlock_ji_mutex(job *pjob, const char *id, const char *msg, int logging);
+int issue_signal(job **, const char *, void(*)(struct batch_request *), void *, char *);
+
 #ifdef BATCH_REQUEST_H
 extern job  *chk_job_request(char *, struct batch_request *);
 extern int   net_move(job *, struct batch_request *);
@@ -1345,7 +1350,6 @@ extern int   svr_chk_owner(struct batch_request *, job *);
 extern struct batch_request *cpy_stage(struct batch_request *, job *, enum job_atr, int);
 extern struct batch_request *setup_cpyfiles(struct batch_request *, job *, char *, char *, int, int);
 extern struct batch_request *cpy_checkpoint(struct batch_request *, job *, enum job_atr, int);
-int issue_signal(job **, const char *, void(*)(struct batch_request *), void *, char *);
 
 #endif /* BATCH_REQUEST_H */
 

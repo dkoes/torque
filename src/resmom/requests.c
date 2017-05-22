@@ -622,7 +622,7 @@ int return_file(
     return(0);
     }
 
-  prq = alloc_br(PBS_BATCH_MvJobFile);
+  prq = new batch_request(PBS_BATCH_MvJobFile);
 
   if (prq == NULL)
     {
@@ -1271,7 +1271,7 @@ int message_job(
     }
 
   /* only the child reaches here, become the user for root-squashing as well */
-  if (become_the_user(pjob) != PBSE_NONE)
+  if (become_the_user(pjob, false) != PBSE_NONE)
     {
     /* log_buffer is populated by become_the_user */
     log_err(errno, __func__, log_buffer);
@@ -4333,7 +4333,7 @@ batch_request *initialize_stageout_request(
   job *pjob)
 
   {
-  batch_request     *preq = alloc_br(PBS_BATCH_CopyFiles);
+  batch_request     *preq = new batch_request(PBS_BATCH_CopyFiles);
   struct rq_cpyfile *pcf = &preq->rq_ind.rq_cpyfile;
 
   pcf->rq_dir = STAGE_DIR_OUT;

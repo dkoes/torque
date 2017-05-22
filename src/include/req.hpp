@@ -182,7 +182,7 @@ class req
     int           getPlaceThreads() const;
     unsigned long getDisk() const;
     int           getMaxtpn() const;
-    int           getGpus() const;
+    int           get_gpus() const;
     int           getMics() const;
     std::string   getGpuMode() const;
     std::string   getGres() const;
@@ -223,5 +223,8 @@ class req
     void          clear_allocations();
     void          set_task_usage_stats(int task_index, unsigned long cput_used, unsigned long long mem_used);
   };
+
+
+int read_mem_value(const char *value, unsigned long &parsed);
 
 #endif /* _REQ_HPP */

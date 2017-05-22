@@ -207,7 +207,7 @@ int Socket::getAvailableChips() const
   return(1);
   }
 
-float Socket::how_many_tasks_fit(const req &r, int place_type) const
+double Socket::how_many_tasks_fit(const req &r, int place_type) const
 
   {
   return(num_tasks_fit);
@@ -241,6 +241,13 @@ bool Socket::is_available() const
   }
 
 void Socket::displayAsJson(Json::Value &out, bool jobs) const {}
+
+void Socket::save_allocations(const Socket &other) {}
+
+int Socket::get_total_gpus() const 
+  {
+  return(0);
+  }
 
 unsigned long req::getMemory() const
   {
@@ -346,7 +353,7 @@ void allocation::set_place_type(const std::string &place)
   this->place_type = my_placement_type;
   }
 
-void allocation::place_indices_in_string(std::string &out, int which) {}
+void allocation::place_indices_in_string(cgroup_info &cgi) {}
 
 int allocation::add_allocation(allocation const &a) 
   {
@@ -378,7 +385,7 @@ int req::getMics() const
   return(0);
   }
 
-int req::getGpus() const
+int req::get_gpus() const
   {
   return(0);
   }

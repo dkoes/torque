@@ -22,6 +22,7 @@ extern int log_event_counter;
 extern bool ms_val;
 extern mom_server mom_servers[PBS_MAXSERVER];
 extern int ServerStatUpdateInterval;
+int get_reply_stream(job *pjob);
 extern time_t LastServerUpdateTime;
 extern time_t time_now;
 extern bool ForceServerUpdate;
@@ -40,11 +41,13 @@ int handle_im_poll_job_response(struct tcp_chan *chan, job &pjob, int nodeidx, h
 received_node *get_received_node_entry(char *str);
 bool is_nodeid_on_this_host(job *pjob, tm_node_id nodeid);
 task *find_task_by_pid(job *pjob, int pid);
+int readit(int, int);
 
 #ifdef PENABLE_LINUX_CGROUPS
 int get_req_and_task_index_from_local_rank(job *pjob, int local_rank, unsigned int &req_index, unsigned int &task_index);
 
 extern bool per_task;
+
 
 START_TEST(test_get_req_and_task_index_from_local_rank)
   {
@@ -69,6 +72,18 @@ START_TEST(test_get_req_and_task_index_from_local_rank)
 END_TEST
 
 #endif
+
+
+START_TEST(test_get_reply_stream)
+  {
+  job pjob;
+  pjob.ji_hosts = NULL;
+
+  // Make sure we don't segfault
+  fail_unless(get_reply_stream(NULL) == -1);
+  fail_unless(get_reply_stream(&pjob) == -1);
+  }
+END_TEST
 
 
 START_TEST(test_find_task_by_pid)
@@ -564,6 +579,13 @@ START_TEST(get_stat_update_interval_test)
   }
 END_TEST
 
+START_TEST(test_readit)
+  {
+  // readset uninitialized so expect failure
+  fail_unless(readit(0, 0) == -2);
+  }
+END_TEST
+
 Suite *mom_comm_suite(void)
   {
   Suite *s = suite_create("mom_comm_suite methods");
@@ -612,6 +634,7 @@ Suite *mom_comm_suite(void)
 
   tc_core = tcase_create("send_update_soon_test");
   tcase_add_test(tc_core, send_update_soon_test);
+  tcase_add_test(tc_core, test_get_reply_stream);
   suite_add_tcase(s, tc_core);
 
   tc_core = tcase_create("get_stat_update_interval_test");
@@ -619,6 +642,10 @@ Suite *mom_comm_suite(void)
 #ifdef PENABLE_LINUX_CGROUPS
   tcase_add_test(tc_core, test_get_req_and_task_index_from_local_rank);
 #endif
+  suite_add_tcase(s, tc_core);
+
+  tc_core = tcase_create("test_readit");
+  tcase_add_test(tc_core, test_readit);
   suite_add_tcase(s, tc_core);
 
   return(s);
