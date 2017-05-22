@@ -39,16 +39,17 @@
 #include <csv.h>
 #include <pwd.h>
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <poll.h>
+
 #ifdef sun
 #include <sys/stream.h>
 #endif /* sun */
 
 #if defined(HAVE_SYS_TTY_H)
 #include <sys/tty.h>
-#endif
-
-#if defined(FD_SET_IN_SYS_SELECT_H)
-#include <sys/select.h>
 #endif
 
 #include "libcmds.h" /* TShowAbout_exit */
@@ -788,17 +789,16 @@ int validate_submit_filter(
 
 void validate_pbs_o_workdir(
 
-  job_data_container *job_attr)
+  const job_info   *ji)
 
   {
-  job_data     *tmp_job_info = NULL;
+  job_data   *tmp_job_info = NULL;
   const char *the_val = NULL;
-  char        null_val[] = "\0";
   char        tmp_dir[MAXPATHLEN] = {""};
 
-  if (hash_find(job_attr, ATTR_init_work_dir, &tmp_job_info) == FALSE)
+  if (hash_find(ji->job_attr, ATTR_init_work_dir, &tmp_job_info) == FALSE)
     {
-    if (hash_find(job_attr, "PWD",  &tmp_job_info))
+    if (hash_find(ji->job_attr, "PWD",  &tmp_job_info))
       the_val = tmp_job_info->value.c_str();
     else
       {
@@ -806,14 +806,35 @@ void validate_pbs_o_workdir(
       if ((the_dir = getcwd(tmp_dir, MAXPATHLEN)) != NULL)
         the_val = the_dir;
       else
-        the_val = null_val;
+        {
+        // Current working directory is deleted. Fail
+        fprintf(stderr, "qsub: Cannot obtain the current directory.\nPlease submit from a valid directory.\n");
+        exit(3);
+        }
       }
     }
   else
+    {
+    // save the value of the work dir job attribute
     the_val = tmp_job_info->value.c_str();
 
-  hash_add_or_exit(job_attr, ATTR_pbs_o_workdir, the_val, ENV_DATA);
-  hash_add_or_exit(job_attr, ATTR_init_work_dir, the_val, ENV_DATA);
+    if (hash_find(ji->client_attr, "validate_path", &tmp_job_info))
+      {
+      // validate local existence of '-w' working directory
+
+      struct stat sb;
+
+      if ((stat(the_val, &sb) != 0) ||
+          (!(S_ISDIR(sb.st_mode))))
+        {
+        fprintf(stderr, "qsub: Requested working directory '%s' is not a valid directory\nPlease specify a valid working directory.\n", the_val);
+        exit(3);
+        }
+      }
+    }
+
+  hash_add_or_exit(ji->job_attr, ATTR_pbs_o_workdir, the_val, ENV_DATA);
+  hash_add_or_exit(ji->job_attr, ATTR_init_work_dir, the_val, ENV_DATA);
   } /* END validate_pbs_o_workdir() */
 
 
@@ -882,6 +903,11 @@ void validate_qsub_host_pbs_o_server(
     }
   } /* END validate_qsub_host_pbs_o_server() */
 
+
+
+/*
+ * are_mpp_present()
+ */
 
 int are_mpp_present(
 
@@ -983,6 +1009,86 @@ bool is_resource_request_valid(
 
 
 
+/*
+ * is_memory_request_valid()
+ * For cgroups, swap cannot be less than phsyical memory, so reject such jobs.
+ *
+ * @param ji (I) - the job information
+ * @param err_msg (O) - the error message
+ * @return true if the request is valid or cgroups aren't enabled, false otherwise.
+ */
+
+bool is_memory_request_valid(
+
+  job_info    *ji,
+  std::string &err_msg)
+
+  {
+  bool valid = true;
+
+#ifdef PENABLE_LINUX_CGROUPS
+  job_data_container *resources = ji->res_attr;
+  job_data           *jd;
+  std::string         mem_str;
+  std::string         vmem_str;
+  unsigned long       mem = 0;
+  unsigned long       vmem = 0;
+
+  if (hash_find(resources, "vmem", &jd) == 0)
+    {
+    if (hash_find(resources, "pvmem", &jd))
+      {
+      read_mem_value(jd->value.c_str(), vmem);
+      vmem_str = jd->value;
+      err_msg = "qsub: requested pvmem='";
+      err_msg += vmem_str;
+      }
+    }
+  else
+    {
+    read_mem_value(jd->value.c_str(), vmem);
+    vmem_str = jd->value;
+    err_msg = "qsub: requested vmem='";
+    err_msg += vmem_str;
+    }
+
+  if (vmem != 0)
+    {
+    if (hash_find(resources, "mem", &jd))
+      {
+      read_mem_value(jd->value.c_str(), mem);
+      mem_str = jd->value;
+      
+      if (vmem < mem)
+        {
+        err_msg += "' which is less than mem='";
+        err_msg += mem_str;
+        err_msg += "'. If p/vmem is set to a non-zero value, it must be greater than or equal to mem.\n";
+        valid = false;
+        }
+      }
+    else if (hash_find(resources, "pmem", &jd))
+      {
+      read_mem_value(jd->value.c_str(), mem);
+      mem_str = jd->value;
+      
+      if (vmem < mem)
+        {
+        err_msg += "' which is less than pmem='";
+        err_msg += mem_str;
+        err_msg += "'. If p/vmem is set to a non-zero value, it must be greater than or equal to pmem.\n";
+        valid = false;
+        }
+      }
+    }
+
+#endif
+
+  return(valid);
+  } // END is_memory_request_valid()
+
+
+
 void validate_basic_resourcing(
 
   job_info *ji)
@@ -991,6 +1097,12 @@ void validate_basic_resourcing(
   std::string err_msg;
 
   if (is_resource_request_valid(ji, err_msg) == false)
+    {
+    fprintf(stderr, "%s", err_msg.c_str());
+    exit(4);
+    }
+
+  if (is_memory_request_valid(ji, err_msg) == false)
     {
     fprintf(stderr, "%s", err_msg.c_str());
     exit(4);
@@ -1074,7 +1186,7 @@ void validate_join_options (
 
 void post_check_attributes(job_info *ji, char *script_tmp)
   {
-  validate_pbs_o_workdir(ji->job_attr);
+  validate_pbs_o_workdir(ji);
   validate_qsub_host_pbs_o_server(ji->job_attr);
   validate_basic_resourcing(ji);
 
@@ -1198,6 +1310,8 @@ static int get_script(
           directive_prefix[0] = '\\';
           strcat(directive_prefix, ArgV[index]);
           directive_prefix_on = false;
+
+          cfilter += directive_prefix;
           continue;
           }
 
@@ -2033,7 +2147,7 @@ void bailout(void)
   printf("Job %s is being deleted\n",
          new_jobname);
 
-  c = cnt2server(server_out);
+  c = cnt2server(server_out, false);
 
   if (c <= 0)
     {
@@ -2167,6 +2281,52 @@ void x11handler(
   exit(EXIT_FAILURE);
   }
 
+/*
+ * wait_for_read_ready()
+ *
+ * Wait for a file descriptor to be ready to read before timeout elapsed
+ * @param fd - file descriptor
+ * @param timeout_sec - time in seconds to wait for read activity
+ * @return -1 if error, 0 if not ready, >1 if ready
+ */
+
+int wait_for_read_ready(
+
+  int fd,
+  int timeout_sec)
+
+  { 
+  struct pollfd   PollArray;
+  struct timespec ts;
+  int             n;
+
+  PollArray.fd = fd;
+  PollArray.events = POLLIN;
+  PollArray.revents = 0;
+
+  ts.tv_sec = timeout_sec;
+  ts.tv_nsec = 0;
+
+  // wait for data ready to read
+  n = ppoll(&PollArray, 1, &ts, NULL);
+
+  if (n > 0)
+    {
+    // events returned, fd ready for reading?
+    if ((PollArray.revents & POLLIN) == 0)
+      {
+      // none ready to read after timeout
+      n = 0;
+      }
+    }
+  else if ((n == -1) && (errno == EINTR))
+    {
+    // ignore signals -- none ready to read
+    n = 0;
+    }
+
+  return(n);
+  }
 
 
 /*
@@ -2182,16 +2342,12 @@ void interactive(
 
   char momjobid[LOG_BUF_SIZE+1];
   int  news;
-  int  nsel;
   char *pc;
-  fd_set selset;
 
   struct sigaction act;
 
   struct sockaddr_in from;
   torque_socklen_t fromlen;
-
-  struct timeval timeout;
 
   struct winsize wsz;
   job_data *tmp_job_info;
@@ -2234,31 +2390,15 @@ void interactive(
 
   /* Accept connection on socket set up earlier */
 
-  nsel = 0;
-
-  while (nsel == 0)
+  while (true)
     {
-    FD_ZERO(&selset);
-    FD_SET(inter_sock, &selset);
+    int rc;
 
-    timeout.tv_usec = 0;
-    timeout.tv_sec  = 30;
+    if ((rc = wait_for_read_ready(inter_sock, 30)) < 0)
+      print_qsub_usage_exit("qsub: poll failed");
 
-    nsel = select(FD_SETSIZE, &selset, NULL, NULL, &timeout);
-
-    if (nsel > 0)
-      {
+    if (rc > 0)
       break;
-      }
-    else if (nsel == -1)
-      {
-      if (errno == EINTR)
-        {
-        nsel = 0;
-        }
-      else
-        print_qsub_usage_exit("qsub: select failed");
-      }
 
     /* connect to server, status job to see if still there */
 
@@ -3376,7 +3516,8 @@ void process_opts(
             if (dependency_options.size() > 1)
               {
               alternate_dependency = strdup(dependency_options[1].c_str());
-              alternate_data_type = data_type;
+              // Make this overwrite the previous value if needed
+              alternate_data_type = data_type - 1;
               }
             }
           else if (!strcmp(keyword, ATTR_job_radix))
@@ -3814,7 +3955,7 @@ void process_opts(
 
           case 'l':
 
-            if (add_verify_resources(ji->res_attr, vptr, data_type))
+            if (add_verify_resources(ji->res_attr, vptr, FILTER_DATA))
               print_qsub_usage_exit("qsub: illegal -l value");
 
             break;
@@ -4610,7 +4751,7 @@ void main_func(
       }
     }
 
-  sock_num = cnt2server(server_out);
+  sock_num = cnt2server(server_out, false);
 
   if (sock_num <= 0)
     {

@@ -25,7 +25,7 @@ const char *msg_registerrel = "Dependency on job %s released.";
 int   i = 2;
 int   svr = 2;
 int   is_attr_set;
-
+int   job_aborted;
 
 struct batch_request *alloc_br(int type)
   {
@@ -121,6 +121,7 @@ int svr_chk_owner(struct batch_request *preq, job *pjob)
 int job_abt(struct job **pjobp, const char *text, bool b=false)
   {
   *pjobp = NULL;
+  job_aborted++;
   return(0);
   }
 
@@ -167,7 +168,7 @@ void append_link(tlist_head *head, list_link *new_link, void *pobj)
   new_link->ll_prior->ll_next = new_link; /* now visible to forward iteration */
   }
 
-int issue_to_svr(const char *servern, struct batch_request **preq, void (*replyfunc)(struct work_task *))
+int issue_to_svr(const char *servern, batch_request *preq, void (*replyfunc)(struct work_task *))
   {
   fprintf(stderr, "The call to issue_to_svr to be mocked!!\n");
   exit(1);
@@ -308,7 +309,7 @@ int unlock_queue(struct pbs_queue *the_queue, const char *id, const char *msg, i
 
 batch_request *get_remove_batch_request(
 
-  char *br_id)
+  const char *br_id)
 
   {
   return(NULL);
@@ -357,7 +358,7 @@ job *job_alloc(void)
   return(pj);
   }
 
-char *get_correct_jobname(const char *jobid)
+const char *get_correct_jobname(const char *jobid, std::string &correct)
 
   {
   char *rv = strdup(jobid);
@@ -366,7 +367,10 @@ char *get_correct_jobname(const char *jobid)
   if ((dot = strchr(rv, '.')) != NULL)
     *dot = '\0';
 
-  return(rv);
+  correct = rv;
+  free(rv);
+
+  return(correct.c_str());
   }
 
 int is_svr_attr_set(int index)
@@ -377,6 +381,7 @@ int is_svr_attr_set(int index)
 
 job::job() : ji_rejectdest()
   {
+  this->ji_wattr[JOB_ATR_hold].at_flags = 0;
   }
 
 job::~job() {}
@@ -393,6 +398,21 @@ array_info::array_info() : struct_version(ARRAY_QS_STRUCT_VERSION), array_size(0
 
 job_array::job_array() : job_ids(NULL), jobs_recovered(0), ai_ghost_recovered(false), uncreated_ids(),
                          ai_mutex(NULL), ai_qs()
+
+  {
+  }
+
+batch_request::~batch_request()
+
+  {
+  }
+
+batch_request::batch_request()
+
+  {
+  }
+
+batch_request::batch_request(int type) : rq_type(type)
 
   {
   }

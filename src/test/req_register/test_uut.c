@@ -41,10 +41,11 @@ void removeAfterAnyDependency(const char *pJobID, const char *targetJob);
 bool job_ids_match(const char *parent, const char *child);
 
 
-extern char server_name[];
-extern int i;
-extern int svr;
-extern int is_attr_set;
+extern char  server_name[];
+extern int   i;
+extern int   svr;
+extern int   is_attr_set;
+extern int   job_aborted;
 
 char          *job1 = (char *)"1.napali";
 char          *job2 = (char *)"2.napali";
@@ -92,7 +93,7 @@ END_TEST
 
 START_TEST(set_array_depend_holds_test)
   {
-  batch_request *preq = (batch_request *)calloc(1, sizeof(batch_request));
+  batch_request *preq = new batch_request();
   job_array     *pa = new job_array();
 
   strcpy(preq->rq_ind.rq_register.rq_child, job1);
@@ -101,6 +102,43 @@ START_TEST(set_array_depend_holds_test)
   fail_unless(register_array_depend(pa, preq, JOB_DEPEND_TYPE_AFTEROKARRAY, 10) == PBSE_NONE);
   pa->ai_qs.num_successful = 12;
   fail_unless(set_array_depend_holds(pa) == true);
+
+  // Make sure we abort the job when the dependency can't be fulfilled
+  job_aborted = 0;
+  pa->ai_qs.deps.clear();
+  fail_unless(register_array_depend(pa, preq, JOB_DEPEND_TYPE_AFTEROKARRAY, 1) == PBSE_NONE);
+  pa->ai_qs.num_successful = 0;
+  pa->ai_qs.num_failed = 10;
+  pa->ai_qs.jobs_done = 10;
+  pa->ai_qs.num_jobs = 10;
+  fail_unless(set_array_depend_holds(pa) == false);
+  fail_unless(job_aborted == 1);
+  
+  // Make sure we don't abort a job just because the dependency isn't fulfilled
+  pa->ai_qs.deps.clear();
+  fail_unless(register_array_depend(pa, preq, JOB_DEPEND_TYPE_AFTERNOTOKARRAY, 1) == PBSE_NONE);
+  pa->ai_qs.num_successful = 10;
+  pa->ai_qs.num_failed = 0;
+  pa->ai_qs.jobs_done = 10;
+  pa->ai_qs.num_jobs = 20;
+  fail_unless(set_array_depend_holds(pa) == false);
+  fail_unless(job_aborted == 1); // Still 1
+  
+  // Now abort it
+  pa->ai_qs.num_successful = 20;
+  pa->ai_qs.jobs_done = 20;
+  fail_unless(set_array_depend_holds(pa) == false);
+  fail_unless(job_aborted == 2);
+  
+  // Abort afterstart as well
+  pa->ai_qs.deps.clear();
+  fail_unless(register_array_depend(pa, preq, JOB_DEPEND_TYPE_AFTERSTARTARRAY, 1) == PBSE_NONE);
+  pa->ai_qs.num_successful = 0;
+  pa->ai_qs.num_failed = 10;
+  pa->ai_qs.jobs_done = 10;
+  pa->ai_qs.num_jobs = 10;
+  fail_unless(set_array_depend_holds(pa) == false);
+  fail_unless(job_aborted == 3); 
   }
 END_TEST
 
@@ -111,7 +149,7 @@ START_TEST(check_dependency_job_test)
   batch_request  preq;
   char          *jobid = strdup("1.napali");
 
-  memset(&preq, 0, sizeof(preq));
+  preq.rq_fromsvr = 0;
 
   fail_unless(check_dependency_job(NULL, NULL, NULL) == PBSE_BAD_PARAMETER, "passed bad params?");
   fail_unless(check_dependency_job(jobid, &preq, &pjob) == PBSE_IVALREQ, "accepted non-server request?");
@@ -127,7 +165,8 @@ START_TEST(check_dependency_job_test)
   fail_unless(check_dependency_job((char *)"bob", &preq, &pjob) == PBSE_JOBNOTFOUND, "wrong rc");
   fail_unless(pjob == NULL, "didn't set job to NULL");
   svr = 2;
-  
+
+  preq.rq_ind.rq_register.rq_dependtype = JOB_DEPEND_TYPE_AFTERANY;
   fail_unless(check_dependency_job((char *)"2.napali", &preq, &pjob) == PBSE_BADSTATE, "wrong rc");
   }
 END_TEST
@@ -280,7 +319,6 @@ START_TEST(register_dep_test)
   int            made = 0;
 
   initialize_depend_attr(&pattr);
-  memset(&preq, 0, sizeof(preq));
   strcpy(preq.rq_ind.rq_register.rq_svr, host);
   strcpy(preq.rq_ind.rq_register.rq_child, job1);
 
@@ -300,7 +338,6 @@ START_TEST(unregister_dep_test)
   struct depend *pdep;
   batch_request  preq;
   
-  memset(&preq, 0, sizeof(preq));
   strcpy(preq.rq_ind.rq_register.rq_svr, host);
   strcpy(preq.rq_ind.rq_register.rq_child, job1);
   preq.rq_ind.rq_register.rq_dependtype = 1;
@@ -428,7 +465,7 @@ END_TEST
 
 START_TEST(req_register_test)
   {
-  batch_request *preq = (batch_request *)calloc(1, sizeof(batch_request));
+  batch_request *preq = new batch_request();
 
   strcpy(preq->rq_ind.rq_register.rq_parent, job1);
   preq->rq_fromsvr = 1;
@@ -557,7 +594,6 @@ START_TEST(register_before_dep_test)
   int            rc = 0;
   char           buf[1000];
   
-  memset(&preq, 0, sizeof(preq));
   memset(&pjob, 0, sizeof(pjob));
 
   strcpy(preq.rq_ind.rq_register.rq_owner, "dbeer");
@@ -587,7 +623,6 @@ START_TEST(register_dependency_test)
   job            pjob;
   pbs_attribute *pattr;
   
-  memset(&preq, 0, sizeof(preq));
   memset(&pjob, 0, sizeof(pjob));
 
   strcpy(preq.rq_ind.rq_register.rq_owner, "dbeer");
@@ -614,7 +649,6 @@ START_TEST(release_before_dependency_test)
   pbs_attribute *pattr;
   struct depend *pdep;
   
-  memset(&preq, 0, sizeof(preq));
   memset(&pjob, 0, sizeof(pjob));
 
   strcpy(preq.rq_ind.rq_register.rq_owner, "dbeer");
@@ -640,7 +674,6 @@ START_TEST(release_syncwith_dependency_test)
   struct depend *pdep;
   batch_request  preq;
 
-  memset(&preq, 0, sizeof(preq));
   memset(&pjob, 0, sizeof(pjob));
   pattr = &pjob.ji_wattr[JOB_ATR_depend];
   initialize_depend_attr(pattr);
@@ -706,7 +739,6 @@ START_TEST(delete_dependency_job_test)
   job           *pjob = job_alloc();
   batch_request  preq;
 
-  memset(&preq, 0, sizeof(preq));
   strcpy(preq.rq_ind.rq_register.rq_parent, job1);
   strcpy(preq.rq_ind.rq_register.rq_child, job1);
 

@@ -123,6 +123,70 @@ Chip::Chip(
 
 
 /*
+ * legacy_parse_values_from_json_string()
+ *
+ * Deprecated. This exists to help people upgrade.
+ */
+
+void Chip::legacy_parse_values_from_json_string(
+
+  const std::string        &json_layout,
+  std::string              &cores,
+  std::string              &threads,
+  std::string              &gpus,
+  std::string              &mics,
+  std::vector<std::string> &valid_ids)
+
+  {
+  char        *work_str = strdup(json_layout.c_str());
+  char        *ptr = strstr(work_str, "os_index\":");
+  char        *val = work_str;
+
+  if (ptr != NULL)
+    {
+    val = ptr + strlen("os_index\":");
+    this->id = strtol(val, &val, 10);
+    }
+
+  if ((ptr = strstr(val, "cores\":")) != NULL)
+    {
+    val = ptr + strlen("cores\":") + 1; // add 1 for the open quote
+    capture_until_close_character(&val, cores, '"');
+    }
+
+  if ((ptr = strstr(val, "threads\":")) != NULL)
+    {
+    val = ptr + strlen("threads\":") + 1; // add 1 for the open quote
+    capture_until_close_character(&val, threads, '"');
+    }
+
+  if ((ptr = strstr(val, "mem\":")) != NULL)
+    {
+    val = ptr + strlen("mem\":");
+    this->memory = strtol(val, &val, 10);
+    this->available_memory = this->memory;
+    }
+
+  if ((ptr = strstr(val, "gpus\":")) != NULL)
+    {
+    val = ptr + strlen("gpus\":") + 1;
+    capture_until_close_character(&val, gpus, '"');
+    }
+
+  if ((ptr = strstr(val, "mics\":")) != NULL)
+    {
+    val = ptr + strlen("mics\":") + 1;
+    capture_until_close_character(&val, mics, '"');
+    }
+
+  initialize_allocations(val, valid_ids);
+
+  free(work_str);
+  } // END legacy_parse_values_from_json_string()
+
+
+
+/*
  * parse_values_from_json_string()
  */
 
@@ -193,6 +257,139 @@ void Chip::initialize_cores_from_strings(
   this->availableCores = this->totalCores;
   this->availableThreads = this->totalThreads;
   } // END initialize_cores_from_strings()
+
+
+
+/*
+ * legacy_initialize_allocation()
+ *
+ * This function is only to support people upgrading from 6.1.0. Deprecated. We should
+ * delete it as soon as it's reasonable to do so.
+ */
+
+void Chip::legacy_initialize_allocation(
+
+  char                     *allocation_str,
+  std::vector<std::string> &valid_ids)
+
+  {
+  allocation a;
+  char        *ptr = strstr(allocation_str, "jobid\":");
+  char        *val = allocation_str;
+  std::string  tmp_val;
+
+  if (ptr != NULL)
+    {
+    val = ptr + 8; // move past "jobid\":\""
+    capture_until_close_character(&val, tmp_val, '"');
+    a.jobid = tmp_val;
+    }
+
+  // check if the id is valid
+  bool id_valid = false;
+  for (size_t i = 0; i < valid_ids.size(); i++)
+    {
+    if (valid_ids[i] == a.jobid)
+      {
+      id_valid = true;
+      break;
+      }
+    }
+
+  if (id_valid == true)
+    {
+    ptr = strstr(val, "cpus\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 7; // move past "cpus\":\""
+      capture_until_close_character(&val, tmp_val, '"');
+      translate_range_string_to_vector(tmp_val.c_str(), a.cpu_indices);
+      }
+
+    ptr = strstr(val, "mem\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 5; // move past "mem\":"
+      a.memory = strtol(val, &val, 10);
+      }
+
+    ptr = strstr(val, "exclusive\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 11; // move past "exclusive\":"
+      a.place_type = strtol(val, &val, 10);
+      }
+
+    ptr = strstr(val, "cores_only\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 12; // move past "cores_only\":"
+      a.cores_only = (bool)strtol(val, &val, 10);
+      }
+
+    ptr = strstr(val, "gpus\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 7; // move past "gpus\":\"
+      capture_until_close_character(&val, tmp_val, '"');
+      translate_range_string_to_vector(tmp_val.c_str(), a.gpu_indices);
+      }
+
+    ptr = strstr(val, "mics\":");
+    if (ptr != NULL)
+      {
+      val = ptr + 7; // move past "mics\":\"
+      capture_until_close_character(&val, tmp_val, '"');
+      translate_range_string_to_vector(tmp_val.c_str(), a.mic_indices);
+      }
+    
+    a.mem_indices.push_back(this->id);
+    this->allocations.push_back(a);
+    }
+
+  } // END legacy_initialize_allocation()
+
+
+
+/*
+ * legacy_initialize_allocations()
+ *
+ * This function is only to support people upgrading from 6.1.0. Deprecated. We should
+ * delete it as soon as it's reasonable to do so.
+ */
+
+void Chip::legacy_initialize_allocations(
+
+  char                     *allocations,
+  std::vector<std::string> &valid_ids)
+
+  {
+  static const char *allocation_start = "allocation\":{";
+  static const int   allocation_start_len = strlen(allocation_start);
+
+  if ((allocations == NULL) ||
+      (*allocations == '\0'))
+    return;
+
+  char *current = strstr(allocations, allocation_start);
+  char *next;
+
+  while (current != NULL)
+    {
+    current += allocation_start_len;
+    next = strstr(current, allocation_start);
+    if (next != NULL)
+      {
+      // Make sure there's a termination to the current string
+      *next = '\0';
+      }
+
+    initialize_allocation(current, valid_ids);
+
+    current = next;
+    }
+
+  } // END legacy_initialize_allocations()
 
 
 
@@ -288,7 +485,7 @@ void Chip::initialize_allocations(
 
 
 /*
- * reserce_allocation_resources()
+ * reserve_allocation_resources()
  *
  * @param a - the allocation that needs to be 
  */
@@ -420,6 +617,42 @@ void Chip::initialize_accelerators_from_strings(
 
 
 /*
+ * This is a legacy constructor for those transitioning from 6.1.0. Delete ASAP
+ */
+
+Chip::Chip(
+
+  const std::string        &json_layout,
+  std::vector<std::string> &valid_ids) : id(0), totalCores(0), totalThreads(0), availableCores(0),
+                                         availableThreads(0), total_gpus(0), available_gpus(0),
+                                         total_mics(0), available_mics(0), chip_exclusive(false),
+                                         memory(0), available_memory(0), cores(), devices(),
+                                         allocations()
+
+  {
+  memset(chip_cpuset_string, 0, MAX_CPUSET_SIZE);
+  memset(chip_nodeset_string, 0, MAX_NODESET_SIZE);
+
+  if (json_layout.size() == 0)
+    return;
+
+  std::string cores;
+  std::string threads;
+  std::string gpus;
+  std::string mics;
+  
+  legacy_parse_values_from_json_string(json_layout, cores, threads, gpus, mics, valid_ids);
+
+  initialize_cores_from_strings(cores, threads);
+  
+  initialize_accelerators_from_strings(gpus, mics);
+
+  adjust_open_resources();
+  }
+
+
+
+/*
  * Creates a numa chip from this json 
  *
  * "numanode" : {
@@ -461,7 +694,6 @@ Chip::Chip(
   std::string threads;
   std::string gpus;
   std::string mics;
-  
   
   parse_values_from_json_string(layout, cores, threads, gpus, mics, valid_ids);
 
@@ -572,6 +804,11 @@ int Chip::getTotalCores() const
 int Chip::getTotalThreads() const
   {
   return(this->totalThreads);
+  }
+
+int Chip::get_total_gpus() const
+  {
+  return(this->total_gpus);
   }
 
 int Chip::getAvailableCores() const
@@ -925,16 +1162,16 @@ int Chip::free_core_count() const
  * @return the number of tasks that fit. This can be 0
  */
 
-float Chip::how_many_tasks_fit(
+double Chip::how_many_tasks_fit(
 
   const req &r,
   int        place_type) const
 
   {
-  float cpu_tasks;
-  float gpu_tasks;
-  float mic_tasks;
-  float mem_tasks = 0;
+  double cpu_tasks;
+  double gpu_tasks;
+  double mic_tasks;
+  double mem_tasks = 0;
 
   // Consider exclusive socket and node the same as exclusive chip for our purposes
   if ((place_type == exclusive_socket) ||
@@ -946,7 +1183,7 @@ float Chip::how_many_tasks_fit(
        (this->chipIsAvailable()) == true))
     {
     // Need to handle place={core|thread}[=x]
-    float max_cpus = r.getExecutionSlots();
+    double max_cpus = r.getExecutionSlots();
     if (r.getPlaceCores() > 0)
       max_cpus = r.getPlaceCores();
     else if (r.getPlaceThreads() > 0)
@@ -959,7 +1196,7 @@ float Chip::how_many_tasks_fit(
     else
       cpu_tasks = this->availableThreads / max_cpus;
 
-    long long memory = r.getMemory();
+    unsigned long memory = r.getMemory();
 
     // Memory isn't required for submission
     if (memory != 0)
@@ -973,7 +1210,7 @@ float Chip::how_many_tasks_fit(
     else
       mem_tasks = cpu_tasks;
 
-    float gpus = r.getGpus();
+    double gpus = r.get_gpus();
     if (gpus > 0)
       {
       gpu_tasks = this->available_gpus / gpus;
@@ -981,7 +1218,7 @@ float Chip::how_many_tasks_fit(
         mem_tasks = gpu_tasks;
       }
 
-    float mics = r.getMics();
+    double mics = r.getMics();
     if (mics > 0)
       {
       mic_tasks = this->available_mics / mics;
@@ -1365,7 +1602,7 @@ bool Chip::task_will_fit(
   bool           fits = false;
   int            max_cpus = r.getExecutionSlots();
   hwloc_uint64_t mem_per_task = r.getMemory();
-  int            gpus_per_task = r.getGpus();
+  int            gpus_per_task = r.get_gpus();
   int            mics_per_task = r.getMics();
   bool           cores_only = (r.getThreadUsageString() == use_cores);
 
@@ -1735,7 +1972,8 @@ bool Chip::spread_place_threads(
 
 
   return(placed);
-  }
+  } // END spread_place_threads()
+
 
 
 /* spread_place_cores
@@ -1858,7 +2096,7 @@ bool Chip::spread_place_cores(
 
 
   return(placed);
-  }
+  } // END spread_place_cores()
 
 
 
@@ -2043,7 +2281,7 @@ int Chip::place_task(
         else
           {
           int threads_to_rsv = execution_slots_per_task;
-          if(r.getPlaceThreads() > 0)
+          if (r.getPlaceThreads() > 0)
             threads_to_rsv = r.getPlaceThreads();
 
           place_tasks_execution_slots(execution_slots_per_task, threads_to_rsv, task_alloc, THREAD_INT);
@@ -2585,6 +2823,23 @@ bool Chip::has_socket_exclusive_allocation() const
 
   return(false);
   } // END has_socket_exclusive_allocation()
+
+
+
+/*
+ * Preserves all relevant information from the allocations for Chip other on this Chip
+ * This is called when replacing one Machine object with another, but we are trying to
+ * keep the information about running jobs.
+ */
+
+void Chip::save_allocations(
+
+  const Chip &other)
+
+  {
+  this->allocations = other.allocations;
+  this->adjust_open_resources();
+  } // END save_allocations()
 
 
 #endif /* PENABLE_LINUX_CGROUPS */  

@@ -7,8 +7,12 @@
 #include <set>
 #include <map>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <limits.h>
+#include <unistd.h>
+#include <string.h>
+#include <grp.h>
 
 #include "pbs_error.h"
 #include "pbs_nodes.h"
@@ -41,12 +45,23 @@ extern bool fail_site_grp_check;
 extern bool am_ms;
 extern bool addr_fail;
 
+extern int global_poll_fd;
+extern int global_poll_timeout_sec;
+
 void create_command(std::string &cmd, char **argv);
 void no_hang(int sig);
 void exec_bail(job *pjob, int code, std::set<int> *sisters_contacted);
 int read_launcher_child_status(struct startjob_rtn *sjr, const char *job_id, int parent_read, int parent_write);
 int process_launcher_child_status(struct startjob_rtn *sjr, const char *job_id, const char *application_name);
 void update_task_and_job_states_after_launch(task *ptask, job *pjob, const char *application_name);
+void escape_spaces(const char *str, std::string &escaped);
+int become_the_user(job*, bool);
+int TMomCheckJobChild(pjobexec_t*, int, int*, int*);
+
+#if NO_SPOOL_OUTPUT == 1
+int save_supplementary_group_list(int*, gid_t**);
+int restore_supplementary_group_list(int, gid_t*);
+#endif
 
 #ifdef PENABLE_LINUX_CGROUPS
 unsigned long long get_memory_limit_from_resource_list(job *pjob);
@@ -137,6 +152,34 @@ START_TEST(test_read_launcher_child_status)
 
   ac_read_amount = 1;
   fail_unless(read_launcher_child_status(&srj, jobid, parent_read, parent_write) != PBSE_NONE);
+  }
+END_TEST
+ 
+ 
+START_TEST(test_escape_spaces)
+  {
+  std::string escaped;
+
+  const char *ws1 = "one two";
+  const char *ws2 = "one two three";
+  const char *ws3 = "one two three four";
+
+  escape_spaces(ws1, escaped);
+  // should have added a slash
+  fail_unless(escaped.size() == strlen(ws1) + 1);
+  fail_unless(escaped == "one\\ two");
+
+  escaped.clear();
+  escape_spaces(ws2, escaped);
+  // should have added two slashes
+  fail_unless(escaped.size() == strlen(ws2) + 2);
+  fail_unless(escaped == "one\\ two\\ three");
+
+  escaped.clear();
+  escape_spaces(ws3, escaped);
+  // should have added three slashes
+  fail_unless(escaped.size() == strlen(ws3) + 3);
+  fail_unless(escaped == "one\\ two\\ three\\ four");
   }
 END_TEST
 
@@ -595,6 +638,150 @@ START_TEST(test_get_num_nodes_ppn)
   }
 END_TEST
 
+
+#if NO_SPOOL_OUTPUT == 1
+START_TEST(test_save_supplementary_group_list)
+  {
+  int ngroups;
+  gid_t *group_list;
+  int rc;
+
+  rc = save_supplementary_group_list(&ngroups, &group_list);
+  fail_unless(rc == 0);
+  fail_unless(ngroups > 0);
+  fail_unless((rc == 0) && (group_list != NULL));
+
+  if (rc == 0)
+    free(group_list);
+  }
+END_TEST
+
+START_TEST(restore_supplementary_group_list_test)
+  {
+  int ngroups;
+  gid_t *group_list;
+  int rc;
+
+  rc = restore_supplementary_group_list(0, NULL);
+  fail_unless(rc < 0);
+
+
+  // must be root to run the following since they call setgroups()
+  if (getuid() == 0)
+    {
+    int i;
+    int ngroups_alt;
+    gid_t *group_list_alt;
+
+    // save the supplementary groups
+    rc = save_supplementary_group_list(&ngroups, &group_list);
+    fail_unless(rc == 0);
+
+    // make a back up copy of the array
+    group_list_alt = (gid_t *)malloc(ngroups * sizeof(gid_t));
+    fail_unless(group_list_alt != NULL);
+    memcpy(group_list_alt, group_list, ngroups * sizeof(gid_t));
+
+    // set to a smaller set
+    rc = setgroups(1, group_list);
+    fail_unless(rc == 0);
+
+    // restore the full set
+    rc = restore_supplementary_group_list(ngroups, group_list);
+    fail_unless(rc == 0);
+
+    // check to make sure full set restored
+    ngroups = getgroups(0, NULL);
+    group_list = (gid_t *)malloc(ngroups * sizeof(gid_t));
+    fail_unless(group_list != NULL);
+    rc = getgroups(ngroups, group_list);
+
+    for (i = 0; i < ngroups; i++)
+      fail_unless(group_list[i] == group_list_alt[i]);
+
+    free(group_list_alt);
+    }
+  }
+END_TEST
+#endif
+
+START_TEST(test_become_the_user)
+  {
+  int rc;
+  job *pjob;
+  int uid;
+  int gid;
+
+  // must be root to run this test
+  if (getuid() != 0)
+    return;
+
+  pjob = (job *)calloc(1, sizeof(job));
+  fail_unless(pjob != NULL);
+
+  pjob->ji_grpcache = (struct grpcache *)calloc(1, sizeof(struct grpcache));
+  fail_unless(pjob->ji_grpcache != NULL);
+
+  pjob->ji_qs.ji_un.ji_momt.ji_exuid = 500;
+  pjob->ji_qs.ji_un.ji_momt.ji_exgid = 500;
+
+  pjob->ji_grpcache->gc_ngroup = 1;
+  pjob->ji_grpcache->gc_groups[0] = 500;
+
+  // fork so we can test the setxid/setexid calls in the child
+  rc = fork();
+  fail_unless(rc != -1);
+
+  if (rc > 0)
+    {
+    int status;
+
+    // parent
+    wait(&status);
+    return;
+    }
+
+  // child
+  
+  rc = become_the_user(pjob, true);
+  fail_unless(rc == PBSE_NONE);
+
+  // check the group list, uid, gid
+  uid = geteuid();
+  gid = getegid();
+  fail_unless(uid != 500);
+  fail_unless(gid != 500);
+
+  // put things back in place
+  fail_unless(seteuid(0) == 0);
+  fail_unless(setegid(0) == 0);
+
+  rc = become_the_user(pjob, false);
+  fail_unless(rc == PBSE_NONE);
+
+  // check the uid, gid
+  uid = getuid();
+  gid = getgid();
+  fail_unless(uid != 500);
+  fail_unless(gid != 500);
+  }
+END_TEST
+
+START_TEST(test_TMomCheckJobChild)
+  {
+  pjobexec_t TJE;
+  int timeout_sec = 39;
+  int count;
+  int rc;
+  int fd = 99;
+
+  TJE.jsmpipe[0] = fd;
+  TMomCheckJobChild(&TJE, timeout_sec, &count, &rc);
+  fail_unless(global_poll_fd == fd);
+  fail_unless(global_poll_timeout_sec == timeout_sec);
+  }
+END_TEST
+
 Suite *start_exec_suite(void)
   {
   Suite *s = suite_create("start_exec_suite methods");
@@ -643,9 +830,25 @@ Suite *start_exec_suite(void)
   tcase_add_test(tc_core, test_get_num_nodes_ppn);
   tcase_add_test(tc_core, test_setup_process_launch_pipes);
   tcase_add_test(tc_core, test_read_launcher_child_status);
+  tcase_add_test(tc_core, test_escape_spaces);
 #ifdef PENABLE_LINUX_CGROUPS
   tcase_add_test(tc_core, get_memory_limit_from_resource_list_test);
 #endif
+  suite_add_tcase(s, tc_core);
+
+#if NO_SPOOL_OUTPUT == 1
+  tc_core = tcase_create("test_save_supplementary_group_list");
+  tcase_add_test(tc_core, test_save_supplementary_group_list);
+  tcase_add_test(tc_core, restore_supplementary_group_list_test);
+  suite_add_tcase(s, tc_core);
+#endif
+
+  tc_core = tcase_create("test_become_the_user");
+  tcase_add_test(tc_core, test_become_the_user);
+  suite_add_tcase(s, tc_core);
+
+  tc_core = tcase_create("test_TMomCheckJobChild");
+  tcase_add_test(tc_core, test_TMomCheckJobChild);
   suite_add_tcase(s, tc_core);
 
   return s;

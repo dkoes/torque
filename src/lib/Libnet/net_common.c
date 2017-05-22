@@ -20,7 +20,12 @@
 #include <errno.h> /* errno */
 #include <fcntl.h> /* fcntl, F_GETFL */
 #include <sys/time.h> /* gettimeofday */
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <poll.h> /* poll functionality */
+
 #include <iostream>
 #include <pthread.h>
 #include "../lib/Liblog/pbs_log.h" /* log_err */
@@ -500,7 +505,7 @@ int process_and_save_socket_error(
  * socket_wait_for_write()
  *
  * connect failed, this function determines why. For non-blocking sockets,
- * EINPROGRESS is almost always set, and you need to select the socket and then
+ * EINPROGRESS is almost always set, and you need to poll the socket and then
  * read error using getsockopt(), as is done below.
  *
  * if the failure is a permanent failure, pass that back to the caller
@@ -516,29 +521,31 @@ int socket_wait_for_write(
   int socket)
 
   {
-  int            rc = PBSE_NONE;
-  int            write_soc = 0;
-  int            sock_errno = 0;
-  socklen_t      len = sizeof(int);
-  fd_set         wfd;
-  struct timeval timeout;
+  int             rc = PBSE_NONE;
+  int             write_soc = 0;
+  int             sock_errno = 0;
+  socklen_t       len = sizeof(int);
+  struct pollfd   PollArray;
+  struct timespec ts;
 
-  timeout.tv_sec = pbs_tcp_timeout;
-  timeout.tv_usec = 0;
+  PollArray.fd = socket;
+  PollArray.events = POLLOUT;
+  PollArray.revents = 0;
 
-  FD_ZERO(&wfd);
-  FD_SET(socket, &wfd);
+  ts.tv_sec = pbs_tcp_timeout;
+  ts.tv_nsec = 0;
 
-  if ((write_soc = select(socket+1, 0, &wfd, 0, &timeout)) != 1)
+  if ((write_soc = ppoll(&PollArray, 1, &ts, NULL)) != 1)
     {
     /* timeout is now seen as a permanent failure */
     rc = PERMANENT_SOCKET_FAIL;
     }
-  else if (((rc = getsockopt(socket, SOL_SOCKET, SO_ERROR, &sock_errno, &len)) == 0) && 
+  else if ((PollArray.revents & POLLOUT) &&
+    ((rc = getsockopt(socket, SOL_SOCKET, SO_ERROR, &sock_errno, &len)) == 0) && 
            (sock_errno == 0))
-    {
-    rc = PBSE_NONE;
-    }
+      {
+      rc = PBSE_NONE;
+      }
   else
     {
     rc = process_and_save_socket_error(sock_errno);
@@ -579,18 +586,22 @@ int socket_wait_for_xbytes(
 int socket_wait_for_read(
     
   int          socket,
-  unsigned int timeout)
+  unsigned int timeout) // seconds
 
   {
-  int           rc = PBSE_NONE;
-  int           ret;
-  struct pollfd pfd;
+  int             rc = PBSE_NONE;
+  int             ret;
+  struct pollfd   pfd;
+  struct timespec ts;
 
   pfd.fd = socket;
   pfd.events = POLLIN | POLLHUP; /* | POLLRDNORM; */
   pfd.revents = 0;
 
-  ret = poll(&pfd, 1, timeout * 1000); /* poll's timeout is in milliseconds */
+  ts.tv_sec = timeout;
+  ts.tv_nsec = 0;
+
+  ret = ppoll(&pfd, 1, &ts, NULL);
   if (ret > 0)
     {
     char buf[8];
@@ -941,7 +952,7 @@ int pbs_getaddrinfo(
 
   if ((*ppAddrInfoOut = get_cached_addrinfo_full(pNode)) != NULL)
     {
-    return 0;
+    return(PBSE_NONE);
     }
 
   if (pHints == NULL)
@@ -955,20 +966,20 @@ int pbs_getaddrinfo(
     {
     if (addrFound)
       {
-      rc = 0;
+      rc = PBSE_NONE;
       }
     else
       {
       rc = getaddrinfo(pNode,NULL,pHints,ppAddrInfoOut);
       }
 
-    if (rc == 0)
+    if (rc == PBSE_NONE)
       {
       addrFound = TRUE;
       *ppAddrInfoOut = insert_addr_name_info(*ppAddrInfoOut,pNode);
       if (*ppAddrInfoOut != NULL)
         {
-        return 0;
+        return(PBSE_NONE);
         }
       rc = EAI_AGAIN;
       }
@@ -982,6 +993,7 @@ int pbs_getaddrinfo(
 
   return EAI_FAIL;
   } /* END pbs_getaddrinfo() */
+
 
 
 int connect_to_trqauthd(

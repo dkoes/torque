@@ -299,12 +299,12 @@ extern int      check_for_mics(uint32_t& mic_count);
 
 #ifdef NVIDIA_GPUS
 #ifdef NVML_API
-extern int      init_nvidia_nvml(unsigned int &device_count);
 extern int      shut_nvidia_nvml();
 #endif  /* NVML_API */
 extern int      check_nvidia_setup();
 #endif  /* NVIDIA_GPUS */
 
+int read_all_devices();
 int send_join_job_to_a_sister(job *pjob, int stream, eventent *ep, tlist_head phead, int node_id);
 void prepare_child_tasks_for_delete();
 static void mom_lock(int fds, int op);
@@ -344,6 +344,7 @@ char           *path_log;
 int                     LOGLEVEL = 0;  /* valid values (0 - 10) */
 int                     DEBUGMODE = 0;
 bool                    daemonize_mom = true;
+bool                    force_layout_update = false;
 long                    TJobStartTimeout = PBS_PROLOG_TIME; /* seconds to wait for job to launch before purging */
 
 
@@ -709,10 +710,6 @@ void die(
     }
 
   cleanup();
-
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-  shut_nvidia_nvml();
-#endif  /* NVIDIA_GPUS and NVML_API */
 
   log_close(1);
 
@@ -3083,10 +3080,6 @@ int rm_request(
 
       cleanup();
 
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-      shut_nvidia_nvml();
-#endif  /* NVIDIA_GPUS and NVML_API */
-
       /* We use delete_job_files_sem to make sure
          there are no outstanding job cleanup routines
          in progress before we exit. delete_job_files_sem
@@ -3342,13 +3335,14 @@ int do_tcp(
     default:
 
       {
-      struct sockaddr_in *addr = NULL;
       struct sockaddr     s_addr;
       unsigned int        len = sizeof(s_addr);
       
       if (getpeername(chan->sock, &s_addr, &len) == 0)
         {
-        addr = (struct sockaddr_in *)&s_addr;
+#if DEBUG > 0
+        struct sockaddr_in *addr = (struct sockaddr_in *)&s_addr;
+#endif
         DBPRT(("%s: unknown request %d from %s",
           __func__, proto, netaddr(addr)))
         }
@@ -3834,9 +3828,9 @@ int job_over_limit(
       total = (index == 0) ? gettime(useresc) : getsize(useresc);
 
 #ifndef NUMA_SUPPORT 
-      for (i = 0;i < pjob->ji_numnodes - 1;i++)
+      for (int j = 0; j < pjob->ji_numnodes - 1; j++)
         {
-        noderes *nr = &pjob->ji_resources[i];
+        noderes *nr = &pjob->ji_resources[j];
 
         total += ((index == 0) ? nr->nr_cput : nr->nr_mem);
         }
@@ -4226,7 +4220,7 @@ void parse_command_line(
 
   errflg = 0;
 
-  while ((c = getopt(argc, argv, "a:A:c:C:d:DFhH:l:L:mM:pPqrR:s:S:vwx-:")) != -1)
+  while ((c = getopt(argc, argv, "a:A:c:C:d:DfFhH:l:L:mM:pPqrR:s:S:vwx-:")) != -1)
     {
     switch (c)
       {
@@ -4331,6 +4325,12 @@ void parse_command_line(
       case 'D':  /* debug */
 
         daemonize_mom = false;
+
+        break;
+
+      case 'f': // force layout update
+
+        force_layout_update = true;
 
         break;
 
@@ -4699,6 +4699,8 @@ int cg_initialize_hwloc_topology()
 
   hwloc_free_xmlbuffer(topology, xml_buf);
 #endif
+
+  read_all_devices();
 
   unsigned long flags = HWLOC_TOPOLOGY_FLAG_WHOLE_SYSTEM;
   flags |= HWLOC_TOPOLOGY_FLAG_IO_DEVICES;
@@ -6466,7 +6468,7 @@ void prepare_child_tasks_for_delete()
 
 
 
-time_t calculate_select_timeout() {
+time_t calculate_poll_timeout() {
   time_t tmpTime;
   extern time_t wait_time;
 
@@ -6608,11 +6610,11 @@ void main_loop(void)
 
     time_now = time((time_t *)0);
 
-    tmpTime = calculate_select_timeout();
+    tmpTime = calculate_poll_timeout();
 
     resend_things();
 
-    /* wait_request does a select and then calls the connection's cn_func for sockets with data */
+    /* wait_request does a poll and then calls the connection's cn_func for sockets with data */
 
     if (wait_request(tmpTime, NULL) != 0)
       {
@@ -7120,6 +7122,8 @@ int main(
     {
     use_nvidia_gpu = FALSE;
     }
+  else
+    shut_nvidia_nvml();
 #endif  /* NVML_API */
   if (!check_nvidia_setup())
     {
@@ -7142,10 +7146,6 @@ int main(
     }
 
   /* shutdown mom */
-
-#if defined(NVIDIA_GPUS) && defined(NVML_API)
-  shut_nvidia_nvml();
-#endif  /* NVIDIA_GPUS and NVML_API */
 
   mom_close_poll();
 

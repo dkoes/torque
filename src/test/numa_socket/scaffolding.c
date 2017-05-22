@@ -128,12 +128,19 @@ Chip::~Chip()
 
 void Chip::aggregate_allocations(std::vector<allocation> &master_list) {}
 
+void Chip::save_allocations(const Chip &other) {}
+
 void Chip::displayAsJson(
 
   Json::Value  &out,
   bool               jobs) const
 
   {
+  }
+
+int Chip::get_total_gpus() const
+  {
+  return(0);
   }
 
 
@@ -251,7 +258,7 @@ int get_machine_total_memory(hwloc_topology_t topology, unsigned long *memory)
   return(PBSE_NONE);
   }
 
-float Chip::how_many_tasks_fit(req const &r, int place_type) const
+double Chip::how_many_tasks_fit(req const &r, int place_type) const
   {
   return(tasks);
   }

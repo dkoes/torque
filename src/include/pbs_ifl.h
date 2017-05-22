@@ -380,6 +380,8 @@
 
 #define ATTR_cpustr                    "cpuset_string"
 #define ATTR_memstr                    "memset_string"
+#define ATTR_gpus_reserved             "gpus_reserved"
+#define ATTR_mics_reserved             "mics_reserved"
 #define ATTR_user_kill_delay           "user_kill_delay"
 #define ATTR_idle_slot_limit           "idle_slot_limit"
 #define ATTR_default_gpu_mode          "default_gpu_mode"
@@ -653,6 +655,7 @@ int pbs_asyrunjob(int c, char *jobid, char *location, char *extend);
 int pbs_alterjob_async(int connect, char *job_id, struct attrl *attrib, char *extend);
 int pbs_alterjob(int connect, char *job_id, struct attrl *attrib, char *extend);
 int pbs_connect(char *server);
+int pbs_connect_ext(char *server, bool silence);
 int pbs_query_max_connections();
 char *pbs_default(void);
 char *pbs_fbserver(void);

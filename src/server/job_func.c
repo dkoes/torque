@@ -142,7 +142,6 @@
 #include "array.h"
 #include "pbs_job.h"
 #include "svr_func.h" /* get_svr_attr_* */
-#include "issue_request.h" /* release_req */
 #include "ji_mutex.h"
 #include "user_info.h"
 #include "mutex_mgr.hpp"
@@ -170,7 +169,6 @@ extern struct batch_request *setup_cpyfiles(struct batch_request *,job *,char*,c
 extern int job_log_open(char *, char *);
 extern int log_job_record(const char *buf);
 extern void check_job_log(struct work_task *ptask);
-int issue_signal(job **, const char *, void(*)(batch_request *), void *, char *);
 void handle_complete_second_time(struct work_task *ptask);
 
 /* Local Private Functions */
@@ -547,7 +545,7 @@ int job_abt(
     {
     svr_setjobstate(pjob, JOB_STATE_RUNNING, JOB_SUBSTATE_ABORT, FALSE);
 
-    if ((rc = issue_signal(&pjob, "SIGKILL", free_br, NULL, NULL)) != 0)
+    if ((rc = issue_signal(&pjob, "SIGKILL", NULL, NULL, NULL)) != 0)
       {
       if (pjob != NULL)
         {
@@ -1632,9 +1630,9 @@ void remove_checkpoint(
   job **pjob_ptr)  /* I */
 
   {
-  struct batch_request *preq = NULL;
-  char                  log_buf[LOCAL_LOG_BUF_SIZE];
-  job                  *pjob = NULL;
+  batch_request *preq = NULL;
+  char           log_buf[LOCAL_LOG_BUF_SIZE];
+  job           *pjob = NULL;
 
   if (pjob_ptr == NULL)
     {
@@ -1684,7 +1682,7 @@ void remove_checkpoint(
         (char *)"unable to remove checkpoint file for job");
       }
 
-    free_br(preq);
+    delete preq;
     }
 
   return;
@@ -1939,25 +1937,12 @@ int svr_job_purge(
       {
       if (pa != NULL)
         {
-        if (pa->job_ids != NULL)
-          {
-          free(pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long]);
-          pa->job_ids[pjob->ji_wattr[JOB_ATR_job_array_id].at_val.at_long] = NULL;
-          }
-        
-        /* if there are no more jobs in the array,
-         * then we can clean that up too */
-        pa->ai_qs.num_purged++;
-        if ((pa->ai_qs.num_purged == pa->ai_qs.num_jobs) ||
-            ((pa->is_deleted() == true) &&
-             (pa->ai_qs.num_idle == 0)))
-          {
-          /* array_delete will unlock pa->ai_mutex */
-          strcpy(array_id, pjob->ji_arraystructid);
-          do_delete_array = true;
-          }
-        else
+        if ((do_delete_array = pa->mark_end_of_subjob(pjob)) == false)
           array_save(pa);
+        else
+          {
+          snprintf(array_id, sizeof(array_id), "%s", pa->ai_qs.parent_id);
+          }
         
         unlock_ai_mutex(pa, __func__, "1", LOGLEVEL);
         }
@@ -1968,7 +1953,6 @@ int svr_job_purge(
       return(PBSE_JOBNOTFOUND);
       }
     }
-
 
   if ((job_substate != JOB_SUBSTATE_TRANSIN) &&
       (job_substate != JOB_SUBSTATE_TRANSICM))
@@ -2430,21 +2414,12 @@ int split_job(
 
 bool job_id_exists(
 
-  const  std::string &job_id_string,
-  int   *rcode)
+  const  std::string &job_id_string)
 
   {
-  int ret;
   bool rc = false;
 
-  ret = alljobs.trylock();
-  if (ret != 0)
-    {
-    *rcode = ret;
-    return(false);
-    }
-
-  *rcode = ret;
+  alljobs.lock();
 
   if (alljobs.find(job_id_string) != NULL)
     {

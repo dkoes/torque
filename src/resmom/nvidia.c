@@ -263,7 +263,10 @@ void log_nvml_error(
  * Function to initialize the Nvidia nvml api
  */
 
-int init_nvidia_nvml(unsigned int &device_count)
+bool init_nvidia_nvml(
+    
+  unsigned int &device_count)
+
   {
   nvmlReturn_t rc;
 
@@ -275,7 +278,7 @@ int init_nvidia_nvml(unsigned int &device_count)
     if (rc == NVML_SUCCESS)
       {
       if ((int)device_count > 0)
-        return (TRUE);
+        return(true);
 
       sprintf(log_buffer,"No Nvidia gpus detected\n");
       log_ext(-1, __func__, log_buffer, LOG_DEBUG);
@@ -284,14 +287,16 @@ int init_nvidia_nvml(unsigned int &device_count)
 
       shut_nvidia_nvml();
 
-      return (FALSE);
+      return(false);
       }
     }
 
   log_nvml_error (rc, NULL, __func__);
 
-  return (FALSE);
-  }
+  return(false);
+  } // END init_nvidia_nvml()
+
+
 
 /*
  * Function to shutdown the Nvidia nvml api
@@ -639,14 +644,42 @@ static int gpumodes(
   return(TRUE);
   }
 
+/*
+ * Return the NVML API version
+ *
+ * Assumptions: Library has already been initialized (nvmlInit() has been called).
+ */
+
+int get_nvml_version()
+  {
+  static int version = -1;
+
+#ifdef NVML_API
+  if (version == -1)
+    {
+    char version_buf[NVML_SYSTEM_NVML_VERSION_BUFFER_SIZE];
+
+    // the nvml version is returned as a string in the form x.y.z
+    // only return major version (x)
+    if (nvmlSystemGetNVMLVersion(version_buf, sizeof(version_buf)) == NVML_SUCCESS)
+      version = atoi(version_buf);
+    }
+#endif
+
+  return(version);
+  }
+
 
 /*
  * Function to set gpu mode
  */
 
 int setgpumode(
-  int   gpuid,
-  int   gpumode)
+
+  int  gpuid,
+  int  gpumode,
+  bool initialized)
+
   {
 #ifdef NVML_API
   nvmlReturn_t      rc;
@@ -654,25 +687,55 @@ int setgpumode(
   nvmlDevice_t      device_hndl;
   char              gpu_id[20];
 
-  if (!check_nvidia_setup())
+  if (initialized == false)
     {
-    return(PBSE_GPU_NOT_INITIALIZED);
+    if (!init_nvidia_nvml(global_gpu_count))
+      return(PBSE_GPU_NOT_INITIALIZED);
+
+    if (!check_nvidia_setup())
+      {
+      shut_nvidia_nvml();
+      return(PBSE_GPU_NOT_INITIALIZED);
+      }
     }
 
   switch (gpumode)
     {
     case gpu_normal:
+
       compute_mode = NVML_COMPUTEMODE_DEFAULT;
       break;
+
     case gpu_exclusive_thread:
-      compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_THREAD;
+
+      if (get_nvml_version() >= 8)
+        {
+        sprintf(log_buffer, "exclusive thread compute mode is not allowed in NVML version %d. Setting exclusive process compute mode instead.",
+          get_nvml_version());
+        log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
+
+        compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_PROCESS;
+        }
+      else
+        {
+        compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_THREAD;
+        }
+
       break;
+
     case gpu_prohibited:
+
+      if (initialized == false)
+        shut_nvidia_nvml();
+
       return (PBSE_IVALREQ);
       break;
+
     case gpu_exclusive_process:
+
       compute_mode = NVML_COMPUTEMODE_EXCLUSIVE_PROCESS;
       break;
+
     default:
       if (LOGLEVEL >= 1)
         {
@@ -680,6 +743,10 @@ int setgpumode(
           rc);
         log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
         }
+    
+      if (initialized == false)
+        shut_nvidia_nvml();
+
       return (PBSE_IVALREQ);
     }
 
@@ -701,7 +768,12 @@ int setgpumode(
     rc = nvmlDeviceSetComputeMode(device_hndl, compute_mode);
 
     if (rc == NVML_SUCCESS)
+      {
+      if (initialized == false)
+        shut_nvidia_nvml();
+
       return (PBSE_NONE);
+      }
 
     sprintf(gpu_id, "%d", gpuid);
     log_nvml_error (rc, gpu_id, __func__);
@@ -709,6 +781,10 @@ int setgpumode(
 
   sprintf(log_buffer, "Failed to get device handle for gpu id %d, nvml error %d", gpuid, rc);
   log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
+
+  if (initialized == false)
+    shut_nvidia_nvml();
+
   return(PBSE_SYSTEM);
 
 #else
@@ -730,6 +806,16 @@ int setgpumode(
     }
   else /* 270 or greater driver */
     {
+    // exclusive thread mode no longer allowed starting with driver version 367
+    if ((MOMNvidiaDriverVersion >= 367) && (gpumode == gpu_exclusive_thread))
+      {
+      sprintf(log_buffer, "exclusive thread compute mode is not allowed with NVIDIA driver version %d. Setting exclusive process compute mode instead.",
+        MOMNvidiaDriverVersion);
+      log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
+
+      gpumode = gpu_exclusive_process;
+      }
+
     sprintf(buf, "nvidia-smi -i %d -c %d 2>&1",
       gpuid,
       gpumode);
@@ -741,8 +827,8 @@ int setgpumode(
     log_ext(-1, __func__, log_buffer, LOG_DEBUG);
     }
 
-	if ((fd = popen(buf, "r")) != NULL)
-		{
+  if ((fd = popen(buf, "r")) != NULL)
+    {
     while (!feof(fd))
       {
       if (fgets(buf, 300, fd))
@@ -775,7 +861,7 @@ int setgpumode(
         }
       }
     pclose(fd);
-		}
+    }
   else
     {
     if (LOGLEVEL >= 0)
@@ -789,7 +875,7 @@ int setgpumode(
 
   return(PBSE_NONE);
 #endif  /* NVML_API */
-  }
+  } // END setgpumode()
 
 
 /*
@@ -808,9 +894,13 @@ int resetgpuecc(
   nvmlEccCounterType_enum counter_type;
   nvmlDevice_t            device_hndl;
   char                    gpu_id[20];
+  
+  if (!init_nvidia_nvml(global_gpu_count))
+    return(PBSE_GPU_NOT_INITIALIZED);
 
   if (!check_nvidia_setup())
     {
+    shut_nvidia_nvml();
     return(PBSE_GPU_NOT_INITIALIZED);
     }
 
@@ -844,7 +934,10 @@ int resetgpuecc(
     rc = nvmlDeviceClearEccErrorCounts(device_hndl, counter_type);
 
     if (rc == NVML_SUCCESS)
+      {
+      shut_nvidia_nvml();
       return (PBSE_NONE);
+      }
 
     sprintf(gpu_id, "%d", gpuid);
     log_nvml_error (rc, gpu_id, __func__);
@@ -852,6 +945,7 @@ int resetgpuecc(
 
   sprintf(log_buffer, "Failed to get device handle for gpu id %d - nvml error %d", gpuid, rc);
   log_err(-1, __func__, log_buffer);
+  shut_nvidia_nvml();
   return(PBSE_SYSTEM);
 
 #else
@@ -977,12 +1071,13 @@ int resetgpuecc(
 
 int set_gpu_modes(
     
-    std::vector<unsigned int>& gpu_indices, 
-    int gpu_flags)
+  std::vector<unsigned int> &gpu_indices, 
+  int gpu_flags)
 
   {
-  int rc = PBSE_NONE;
-  int gpu_mode = -1;
+  int  rc = PBSE_NONE;
+  int  gpu_mode = -1;
+  bool initialized = false;
 
   gpu_mode = gpu_flags;
 
@@ -995,6 +1090,20 @@ int set_gpu_modes(
        to reset error counts */
     gpu_mode -= 1000;
     }
+
+
+#ifdef NVML_API
+  if (!init_nvidia_nvml(global_gpu_count))
+    return(PBSE_GPU_NOT_INITIALIZED);
+
+  if (!check_nvidia_setup())
+    {
+    shut_nvidia_nvml();
+    return(PBSE_GPU_NOT_INITIALIZED);
+    }
+
+  initialized = true;
+#endif
 
   for (std::vector<unsigned int>::iterator it = gpu_indices.begin(); it != gpu_indices.end(); it++)
     {
@@ -1012,7 +1121,7 @@ int set_gpu_modes(
         }
       }
 
-      set_mode_result = setgpumode(*it, gpu_mode);
+      set_mode_result = setgpumode(*it, gpu_mode, initialized);
       if (set_mode_result != PBSE_NONE)
         {
         sprintf(log_buffer, "could not set mode on gpu %d", *it);
@@ -1020,9 +1129,13 @@ int set_gpu_modes(
         rc = set_mode_result;
         }
       }
+    
+#ifdef NVML_API
+  shut_nvidia_nvml();
+#endif
 
   return(rc);
-  }
+  } // END set_gpu_modes()
 
 
 /*
@@ -1077,22 +1190,22 @@ int get_gpu_mode(
 
 int set_gpu_req_modes(
     
-    std::vector<unsigned int>& gpu_indices, 
-    int gpu_flags,
-    job *pjob)
+  std::vector<unsigned int> &gpu_indices, 
+  int                        gpu_flags,
+  job                       *pjob)
 
   {
   pbs_attribute *pattr;
-  int rc;
-  unsigned int gpu_indices_size = gpu_indices.size();
-  std::vector<unsigned int>::iterator it = gpu_indices.begin();
+  int            rc;
+  unsigned int   gpu_indices_size = gpu_indices.size();
+  size_t         gpu_index = 0;
+  bool           initialized = false;
 
   /* Is the a -l resource request or a -L resource request */
   pattr = &pjob->ji_wattr[JOB_ATR_resource];
   if (have_incompatible_dash_l_resource(pattr) == true)
     {
     rc = set_gpu_modes(gpu_indices, gpu_flags);
-    
     }
   else
     {
@@ -1111,16 +1224,29 @@ int set_gpu_req_modes(
       req r; 
       std::string gpu_mode;
 
-      for (unsigned int i = 0; i < cr->get_num_reqs() && it != gpu_indices.end(); i++)
+#ifdef NVML_API
+      if (!init_nvidia_nvml(global_gpu_count))
+        return(PBSE_GPU_NOT_INITIALIZED);
+
+      if (!check_nvidia_setup())
+        {
+        shut_nvidia_nvml();
+        return(PBSE_GPU_NOT_INITIALIZED);
+        }
+
+      initialized = true;
+#endif
+
+      for (unsigned int i = 0; i < cr->get_num_reqs() && gpu_index < gpu_indices.size(); i++)
         {
         int total_req_gpus;
 
         /* Look through each req and see if there is a mode to set */
         r = cr->get_req(i);
         gpu_mode = r.get_gpu_mode(); /* returns a string indicating the gpu mode */
-        total_req_gpus = r.getGpus();
+        total_req_gpus = r.get_gpus();
 
-        for (unsigned int j = 0; j < total_req_gpus && it != gpu_indices.end(); j++)
+        for (unsigned int j = 0; j < total_req_gpus && gpu_index < gpu_indices.size(); j++)
           {
           /* only use as many gpus as requested for the req */
           int mode;
@@ -1128,35 +1254,53 @@ int set_gpu_req_modes(
           if (gpu_flags >= 1000)
             {
             /* We need to reset error counts */
-            resetgpuecc(*it, 0, 1);
+            resetgpuecc(gpu_indices[gpu_index], 0, 1);
             }
 
           mode = get_gpu_mode(gpu_mode);
           if (mode == gpu_mode_not_set)
+            {
+#ifdef NVML_API
+            shut_nvidia_nvml();
+#endif
             return(PBSE_NONE);
+            }
 
           if (mode == gpu_unknown)
             {
             sprintf(log_buffer, "gpu mode unknown: %s", pjob->ji_qs.ji_jobid);
             log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
+
+#ifdef NVML_API
+            shut_nvidia_nvml();
+#endif
             return(PBSE_IVALREQ);
             }
 
-          rc = setgpumode(*it, mode);
+          rc = setgpumode(gpu_indices[gpu_index], mode, initialized);
           if (rc != PBSE_NONE)
             {
-            sprintf(log_buffer, "could not set mode on gpu %d", *it);
+            sprintf(log_buffer, "could not set mode on gpu %d", gpu_indices[gpu_index]);
             log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, __func__, log_buffer);
+
+#ifdef NVML_API
+            shut_nvidia_nvml();
+#endif
+
             return(PBSE_IVALREQ);
             }
-          it++;
+
+          gpu_index++;
           }
         }
 
-
-        rc = PBSE_NONE;
+      rc = PBSE_NONE;
       }
     }
+
+#ifdef NVML_API
+  shut_nvidia_nvml();
+#endif
 
   return(rc);
   }
@@ -1258,8 +1402,12 @@ void generate_server_gpustatus_nvml(
   unsigned long long  ecc_counts;
   char                tmpbuf[1024+1];
 
+  if (!init_nvidia_nvml(global_gpu_count))
+    return;
+
   if (!check_nvidia_setup())
     {
+    shut_nvidia_nvml();
     return;
     }
 
@@ -1268,7 +1416,10 @@ void generate_server_gpustatus_nvml(
 #ifdef NUMA_SUPPORT
   // does this node have gpus configured?
   if (node_boards[numa_index].gpu_end_index < 0)
+    {
+    shut_nvidia_nvml();
     return;
+    }
 #endif
 
   /* get timestamp to report */
@@ -1297,6 +1448,7 @@ void generate_server_gpustatus_nvml(
   if (rc != NVML_SUCCESS)
     {
     log_nvml_error (rc, NULL, __func__);
+    shut_nvidia_nvml();
     return;
     }
 #endif
@@ -1560,10 +1712,11 @@ void generate_server_gpustatus_nvml(
       }
 
     }
+    
+  shut_nvidia_nvml();
 
   return;
-
-  }
+  } // END generate_server_gpustatus_nvml()
 #endif  /* NVML_API */
 
 
@@ -2074,6 +2227,7 @@ void generate_server_gpustatus_smi(
   }
 
 
+
 void req_gpuctrl_mom(
 
   struct batch_request *preq)  /* I */
@@ -2132,7 +2286,7 @@ void req_gpuctrl_mom(
 
   if (gpumode != -1)
     {
-    rc = setgpumode(gpuid, gpumode);
+    rc = setgpumode(gpuid, gpumode, false);
     }
   else if ((reset_perm != -1) || (reset_vol != -1))
     {
@@ -2203,3 +2357,5 @@ int add_gpu_status(
 
   return(PBSE_NONE);
   } /* END add_gpu_status() */
+
+

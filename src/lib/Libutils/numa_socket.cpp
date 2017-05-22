@@ -47,6 +47,49 @@ Socket::Socket(
 
 
 /*
+ * Legacy constructor for those upgrading from 6.1.0
+ */
+
+Socket::Socket(
+
+  const std::string        &json_layout,
+  std::vector<std::string> &valid_ids) : id(0), memory(0), totalCores(0), totalThreads(0),
+                                         availableCores(0), availableThreads(0), chips(),
+                                         socket_exclusive(false)
+
+  {
+  const char *chip_str = "\"numanode\":{";
+  const char *os_str = "\"os_index\":";
+  std::size_t chip_begin = json_layout.find(chip_str);
+  std::size_t os_begin = json_layout.find(os_str);
+
+  memset(socket_cpuset_string, 0, MAX_CPUSET_SIZE);
+  memset(socket_nodeset_string, 0, MAX_NODESET_SIZE);
+
+  if ((os_begin == std::string::npos) ||
+      (os_begin > chip_begin))
+    return;
+  else
+    {
+    std::string os = json_layout.substr(os_begin + strlen(os_str));
+    this->id = strtol(os.c_str(), NULL, 10);
+    }
+  
+  while (chip_begin != std::string::npos)
+    {
+    std::size_t next = json_layout.find(chip_str, chip_begin + 1);
+    std::string one_chip = json_layout.substr(chip_begin, next - chip_begin);
+
+    Chip c(one_chip, valid_ids);
+    this->chips.push_back(c);
+
+    chip_begin = next;
+    }
+  }
+
+
+
+/*
  * Builds a copy of the machine's layout in from json which has no whitespace but 
  * if it did it'd look like:
  *
@@ -311,6 +354,26 @@ int Socket::getTotalChips() const
   return(this->chips.size());
   }
 
+int Socket::get_total_gpus() const
+  {
+  int total_gpus = 0;
+
+  for (size_t i = 0; i < this->chips.size(); i++)
+    total_gpus += this->chips[i].get_total_gpus();
+
+  return(total_gpus);
+  }
+
+int Socket::get_available_gpus() const
+  {
+  int available_gpus = 0;
+
+  for (size_t i = 0; i < this->chips.size(); i++)
+    available_gpus += this->chips[i].get_available_gpus();
+
+  return(available_gpus);
+  }
+
 int Socket::getAvailableChips() const
   {
   int available_numa_nodes = 0;
@@ -467,13 +530,13 @@ void Socket::update_internal_counts(
  * @return - the number of tasks from r that could be placed on this socket
  */
 
-float Socket::how_many_tasks_fit(
+double Socket::how_many_tasks_fit(
 
   const req &r,
   int        place_type) const
 
   {
-  float num_that_fit = 0;
+  double num_that_fit = 0;
 
   if ((this->socket_exclusive == false) &&
       ((place_type != exclusive_socket) ||
@@ -834,17 +897,20 @@ bool Socket::fits_on_socket(
     if (remaining.place_cpus > 0)
       max_cpus = remaining.place_cpus;
 
-    if ((remaining.cores_only == true) &&
-        (this->get_free_cores() >= max_cpus))
-      fits = true;
-    else if (remaining.place_type == exclusive_legacy)
+    if (this->get_available_gpus() >= remaining.gpus)
       {
-      if (this->get_free_cores() >= max_cpus)
+      if ((remaining.cores_only == true) &&
+          (this->get_free_cores() >= max_cpus))
+        fits = true;
+      else if (remaining.place_type == exclusive_legacy)
+        {
+        if (this->get_free_cores() >= max_cpus)
+          fits = true;
+        }
+      else if ((remaining.cores_only == false) &&
+               (this->getAvailableThreads() >= max_cpus))
         fits = true;
       }
-    else if ((remaining.cores_only == false) &&
-             (this->getAvailableThreads() >= max_cpus))
-      fits = true;
     }
 
   return(fits);
@@ -925,6 +991,17 @@ int Socket::get_mics_remaining()
     }
 
   return(mics_available);
+  }
+
+
+
+void Socket::save_allocations(
+
+  const Socket &other)
+
+  {
+  for (size_t c = 0; c < this->chips.size() && c < other.chips.size(); c++)
+    this->chips[c].save_allocations(other.chips[c]);
   }
 
 

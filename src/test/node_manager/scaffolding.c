@@ -981,11 +981,10 @@ void Machine::displayAsJson(stringstream &out, bool include_jobs) const {}
 
 int Machine::place_job(
 
-  job        *pjob,
-  string     &cpu_string,
-  string     &mem_string,
-  const char *hostname,
-  bool        legacy_vmem)
+  job         *pjob,
+  cgroup_info &cgi,
+  const char  *hostname,
+  bool         legacy_vmem)
 
   {
   return(0);
@@ -1092,3 +1091,7 @@ pbsnode *authorized_hosts::get_authorized_node(unsigned long addr, unsigned shor
 
 authorized_hosts::authorized_hosts() {}
 authorized_hosts auth_hosts;
+
+batch_request::batch_request(int type) {}
+batch_request::~batch_request() {}
+
