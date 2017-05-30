@@ -1265,6 +1265,7 @@ int is_gpustat_get(
         np->nd_gpusn[gpuidx].mode = gpu_normal;
         if (gpu_has_job(np, gpuidx))
           {
+          np->nd_gpusn[gpuidx].inuse = 1;              
           np->nd_gpusn[gpuidx].state = gpu_shared;
           }
         else
@@ -1279,6 +1280,7 @@ int is_gpustat_get(
         np->nd_gpusn[gpuidx].mode = gpu_exclusive_thread;
         if (gpu_has_job(np, gpuidx))
           {
+          np->nd_gpusn[gpuidx].inuse = 1;              
           np->nd_gpusn[gpuidx].state = gpu_exclusive;
           }
         else
@@ -1292,6 +1294,7 @@ int is_gpustat_get(
         np->nd_gpusn[gpuidx].mode = gpu_exclusive_process;
         if (gpu_has_job(np, gpuidx))
           {
+          np->nd_gpusn[gpuidx].inuse = 1;                            
           np->nd_gpusn[gpuidx].state = gpu_exclusive;
           }
         else

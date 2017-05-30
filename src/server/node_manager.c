@@ -1915,7 +1915,15 @@ int gpu_count(
   if (freeonly == false)
     count = pnode->nd_ngpus;
   else
-    count = pnode->nd_ngpus_free;
+    {
+        //dkoes - the nd_ngpus_free counter can get out of date if the
+        //server restarts, so always scan the list
+        for (int i = 0; i < pnode->nd_ngpus; i++)
+          {
+            gpusubn &gn = pnode->nd_gpusn[i];
+            if(!gn.inuse && gn.state != gpu_unavailable) count++;
+          }
+    }
 
   if (LOGLEVEL >= 7)
     {
