@@ -2373,6 +2373,8 @@ bool node_is_spec_acceptable(
   int             gpu_free;
   int             np_free;
   int             mic_free;
+  int             remaining_np;
+  int             remaining_gpu;
 
 #ifdef GEOMETRY_REQUESTS
   if (IS_VALID_STR(ProcBMStr))
@@ -2410,6 +2412,16 @@ bool node_is_spec_acceptable(
       (gpu_req > gpu_free) ||
       (mic_req > mic_free))
     return(false);
+    
+  /* dkoes 
+   * remaining_np = (np_free - ppn_req) must be >= 0 at this point, and is cores left available after running this job
+   * remaining_gpu = (gpu_free-gpu_req) are the #gpus left available
+   * to ensure gpu availability, insist that remaining_np >= remaining_gpu
+   */
+  remaining_np = np_free - ppn_req;
+  remaining_gpu = gpu_free - gpu_req;
+  if(remaining_np < remaining_gpu)
+    return false;  // no way to run additional jobs on all avail gpus
 
   if (job_is_exclusive)
     {
