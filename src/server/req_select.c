@@ -398,7 +398,11 @@ static void sel_step3(
     }
 
   pselx = &preply->brp_un.brp_select;
-  pal = (svrattrl *)GET_NEXT(preq->rq_ind.rq_status.rq_attr);
+  if(preq->rq_ind.rq_status.rq_attr) {
+    pal = (svrattrl *)GET_NEXT(preq->rq_ind.rq_status.rq_attr);
+  } else {
+    pal = NULL;
+  }
 
   if (preq->rq_extend != NULL)
     if (!strncmp(preq->rq_extend, EXECQUEONLY, strlen(EXECQUEONLY)))
