@@ -724,10 +724,28 @@ int run_update_job(int pbs_sd, server_info *sinfo, queue_info *qinfo,
 
     sched_log(PBSEVENT_SCHED, PBS_EVENTCLASS_JOB, jinfo -> name, "Job Run");
 
+    sched_log(
+      PBSEVENT_DEBUG2,
+      PBS_EVENTCLASS_JOB,
+      jinfo->name,
+      "Update server on run");
+
     update_server_on_run(sinfo, qinfo, jinfo);
 
+    sched_log(
+      PBSEVENT_DEBUG2,
+      PBS_EVENTCLASS_JOB,
+      jinfo->name,
+      "Update queue on run");
+      
     update_queue_on_run(qinfo, jinfo);
 
+    sched_log(
+      PBSEVENT_DEBUG2,
+      PBS_EVENTCLASS_JOB,
+      jinfo->name,
+      "Update job on run");
+      
     update_job_on_run(pbs_sd, jinfo);
 
     if (cstat.fair_share)
