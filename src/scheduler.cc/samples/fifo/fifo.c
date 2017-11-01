@@ -515,8 +515,20 @@ int scheduling_cycle(
 
     update_job_neednodes(sd, jinfo); /*dkoes - add any needed prop to neednodes */
 
+    sched_log(
+      PBSEVENT_DEBUG2,
+      PBS_EVENTCLASS_JOB,
+      jinfo->name,
+      "Updated neednodes");
+
     if ((ret = is_ok_to_run_job(sd, sinfo, jinfo->queue, jinfo)) == SUCCESS)
       {
+        sched_log(
+          PBSEVENT_DEBUG2,
+          PBS_EVENTCLASS_JOB,
+          jinfo->name,
+          "Is okay to run");
+
       run_update_job(sd, sinfo, jinfo->queue, jinfo);
       }
     else
