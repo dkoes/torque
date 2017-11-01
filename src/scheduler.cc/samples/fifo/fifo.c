@@ -702,6 +702,11 @@ int run_update_job(int pbs_sd, server_info *sinfo, queue_info *qinfo,
 
   buf[0] = '\0';
 
+    sched_log(
+      PBSEVENT_DEBUG2,
+      PBS_EVENTCLASS_JOB,
+      jinfo->name,
+      "pbs runjob err");
   ret = pbs_runjob_err(pbs_sd, jinfo -> name, best_node_name, NULL, &local_errno);
 
   if (ret == 0)
