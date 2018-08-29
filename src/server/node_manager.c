@@ -3052,7 +3052,8 @@ int select_from_all_nodes(
   int                            num_alps_reqs,   /* I */
   enum job_types                 job_type,        /* I */
   char                          *ProcBMStr,       /* I (optional) */
-  bool                           job_is_exclusive)
+  bool                           job_is_exclusive,
+  complete_req                  *cr)
 
   {
   node_iterator   iter;
@@ -3073,6 +3074,24 @@ int select_from_all_nodes(
         {
         if (node_is_spec_acceptable(pnode, req, ProcBMStr, eligible_nodes,job_is_exclusive) == true)
           {
+#ifdef PENABLE_LINUX_CGROUPS            
+            if(cr &&  cr->req_count() > 0) {
+              //dkoes - this is hacky; only checking first request, and not doing precise bookkeeping
+              req &r = cr->get_req(0);
+              int can_place = pnode->nd_layout.how_many_tasks_can_be_placed(r);
+
+
+              if (LOGLEVEL >= 3)
+              {
+                char  log_buf[LOCAL_LOG_BUF_SIZE];                
+                sprintf(log_buf, "request needs %d, can place %d on %s",r.getTaskCount(),can_place,pnode->get_name());
+                log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
+              }
+              if (can_place == 0) //skip node that can't support any tasks
+                continue;
+            }
+            
+#endif
           record_fitting_node(num, pnode, naji_list, req, first_node_id, req.req_id, num_alps_reqs, job_type, all_reqs, ard_array);
 
           /* are all reqs satisfied? */
@@ -3196,7 +3215,8 @@ int node_spec(
   alps_req_data                **ard_array,  /* O (optional) */
   int                           *num_reqs,   /* O (optional) */
   enum job_types                &job_type,
-  bool                           job_is_exclusive) /* I If true job requires must be only one on node. */
+  bool                           job_is_exclusive, /* I If true job requires must be only one on node. */
+  complete_req                  *cr = NULL) /* complete req for checking mem */
 
   {
   FUNCTION_TIMER
@@ -3451,7 +3471,7 @@ int node_spec(
     select_nodes_using_hostlist(all_reqs, naji_list, &eligible_nodes, spec, ard_array, first_node_id, num_alps_reqs, job_type, ProcBMStr,job_is_exclusive);
     }
   else
-    select_from_all_nodes(all_reqs, naji_list, &eligible_nodes, ard_array, first_node_id, num_alps_reqs, job_type, ProcBMStr,job_is_exclusive);
+    select_from_all_nodes(all_reqs, naji_list, &eligible_nodes, ard_array, first_node_id, num_alps_reqs, job_type, ProcBMStr,job_is_exclusive,cr);
 
   
   free(spec);
@@ -4100,6 +4120,24 @@ void save_node_usage(
 
 
 
+//return complete_req for job, creating if necessary
+complete_req * get_complete_req(job *pjob, int ppn_needed=0)
+{
+    complete_req *cr;
+    long          legacy_vmem = FALSE;
+
+    if (pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr == NULL)
+    {
+      get_svr_attr_l(SRV_ATR_LegacyVmem, &legacy_vmem);
+      cr = new complete_req(pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr, ppn_needed, (bool)legacy_vmem);
+      pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr = cr; 
+      pjob->ji_wattr[JOB_ATR_req_information].at_flags |= ATR_VFLAG_SET;
+    } else {
+      cr = (complete_req *)pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr;    
+    }
+    return cr;
+}
+
 void update_req_hostlist(
     
   job        *pjob,
@@ -4114,17 +4152,7 @@ void update_req_hostlist(
  
   snprintf(host_spec, sizeof(host_spec), "%s:ppn=%d", host_name, ppn_needed);
 
-  if (pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr == NULL)
-    {
-    get_svr_attr_l(SRV_ATR_LegacyVmem, &legacy_vmem);
-    cr = new complete_req(pjob->ji_wattr[JOB_ATR_resource].at_val.at_ptr, ppn_needed, (bool)legacy_vmem);
-    pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr = cr; 
-    pjob->ji_wattr[JOB_ATR_req_information].at_flags |= ATR_VFLAG_SET;
-    }
-  else
-    {
-    cr = (complete_req *)pjob->ji_wattr[JOB_ATR_req_information].at_val.at_ptr;
-    }
+  cr = get_complete_req(pjob, ppn_needed);
 
   if (cray_enabled == true)
     {
@@ -4956,7 +4984,7 @@ int set_nodes(
     {
 #endif
     i = node_spec(spec, 1, 1, ProcBMStr, FailHost, &naji_list, EMsg, login_prop, &ard_array,
-                  &num_reqs, job_type, job_is_exclusive);
+                  &num_reqs, job_type, job_is_exclusive, get_complete_req(pjob));
 #ifdef PENABLE_LINUX_CGROUPS
     }
 #endif
