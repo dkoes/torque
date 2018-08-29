@@ -3068,11 +3068,11 @@ int select_from_all_nodes(
     /* check each req against this node to see if it satisfies it */
     for (int i = 0; i < all_reqs.num_reqs; i++)
       {
-      single_spec_data &req = all_reqs.reqs[i];
+      single_spec_data &sreq = all_reqs.reqs[i];
 
-      if (req.nodes > 0)
+      if (sreq.nodes > 0)
         {
-        if (node_is_spec_acceptable(pnode, req, ProcBMStr, eligible_nodes,job_is_exclusive) == true)
+        if (node_is_spec_acceptable(pnode, sreq, ProcBMStr, eligible_nodes,job_is_exclusive) == true)
           {
 #ifdef PENABLE_LINUX_CGROUPS            
             if(cr &&  cr->req_count() > 0) {
@@ -3092,7 +3092,7 @@ int select_from_all_nodes(
             }
             
 #endif
-          record_fitting_node(num, pnode, naji_list, req, first_node_id, req.req_id, num_alps_reqs, job_type, all_reqs, ard_array);
+          record_fitting_node(num, pnode, naji_list, sreq, first_node_id, sreq.req_id, num_alps_reqs, job_type, all_reqs, ard_array);
 
           /* are all reqs satisfied? */
           if (all_reqs.total_nodes == 0)
