@@ -917,6 +917,18 @@ int Machine::spread_place_pu(
   } /* END spread_place_pu() */
 
 
+/* Return total amount of memory available */
+hwloc_uint64_t Machine::getAvailableMemory() const
+{
+  hwloc_uint64_t mem = 0;
+
+  for (size_t i = 0, n = this->sockets.size(); i < n; i++)
+  {
+      mem += this->sockets[i].getAvailableMemory();
+  }
+
+  return mem;
+}
 
 /*
  * spread_place()

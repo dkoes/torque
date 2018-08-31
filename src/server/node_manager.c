@@ -3053,7 +3053,10 @@ int select_from_all_nodes(
   enum job_types                 job_type,        /* I */
   char                          *ProcBMStr,       /* I (optional) */
   bool                           job_is_exclusive,
-  complete_req                  *cr)
+#ifdef PENABLE_LINUX_CGROUPS
+  complete_req                  *cr
+#endif
+)
 
   {
   node_iterator   iter;
@@ -3076,15 +3079,19 @@ int select_from_all_nodes(
           {
 #ifdef PENABLE_LINUX_CGROUPS            
             if(cr &&  cr->req_count() > 0) {
-              //dkoes - this is hacky; only checking first request, and not doing precise bookkeeping
-              req &r = cr->get_req(0);
-              int can_place = pnode->nd_layout.how_many_tasks_can_be_placed(r);
+              //dkoes - check for available memory; do not use how_many_tasks_can_be_placed
+              //or check for other resource constraints because apprarently there are complexities here
+              //(e.g., all gpus will be assigned to one socket - you need to spread out the request)
+
+              unsigned long long availmem = pnode->nd_layout.getAvailableMemory();
+              unsigned long long reqmem = cr->get_total_req_memory();
+              int can_place = availmem > reqmem; //TODO, other checks as needed
 
 
               if (LOGLEVEL >= 3)
               {
                 char  log_buf[LOCAL_LOG_BUF_SIZE];                
-                sprintf(log_buf, "request needs %d, can place %d on %s",r.getTaskCount(),can_place,pnode->get_name());
+                sprintf(log_buf, "request needs %lld mem, have only %lld on %s",reqmem,availmem,pnode->get_name());
                 log_record(PBSEVENT_SCHED, PBS_EVENTCLASS_REQUEST, __func__, log_buf);
               }
               if (can_place == 0) //skip node that can't support any tasks
@@ -3216,7 +3223,10 @@ int node_spec(
   int                           *num_reqs,   /* O (optional) */
   enum job_types                &job_type,
   bool                           job_is_exclusive, /* I If true job requires must be only one on node. */
-  complete_req                  *cr = NULL) /* complete req for checking mem */
+#ifdef PENABLE_LINUX_CGROUPS
+  complete_req                  *cr = NULL /* complete req for checking mem */
+#endif
+  )
 
   {
   FUNCTION_TIMER
@@ -4120,6 +4130,7 @@ void save_node_usage(
 
 
 
+#ifdef PENABLE_LINUX_CGROUPS
 //return complete_req for job, creating if necessary
 complete_req * get_complete_req(job *pjob, int ppn_needed=0)
 {
@@ -4137,6 +4148,7 @@ complete_req * get_complete_req(job *pjob, int ppn_needed=0)
     }
     return cr;
 }
+#endif
 
 void update_req_hostlist(
     

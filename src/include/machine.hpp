@@ -345,7 +345,7 @@ class Machine
     int get_total_gpus() const;
     int getAvailableSockets() const;
     int getAvailableChips() const;
-    int getAvailableMemory() const;
+    hwloc_uint64_t getAvailableMemory() const;
     int getAvailableCores() const;
     int getAvailableThreads() const;
     int getDedicatedSockets() const;

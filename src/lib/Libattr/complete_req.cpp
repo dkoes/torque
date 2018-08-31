@@ -535,6 +535,16 @@ unsigned long long complete_req::get_swap_memory_for_this_host(
   return(mem);
   } // END get_swap_memory_for_this_host()
 
+unsigned long long complete_req::get_total_req_memory() const
+{
+  //dkoes - sum up the memory in all requests
+  unsigned long long mem = 0;
+
+  for (unsigned int i = 0; i < this->reqs.size(); i++)
+    mem += this->reqs[i].get_memory_per_task();
+
+  return(mem);
+}
 
 
 /* 

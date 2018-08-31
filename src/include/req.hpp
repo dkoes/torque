@@ -202,7 +202,7 @@ class req
     bool          cgroup_preference_set() const;
     int           get_task_allocation(unsigned int index, allocation &task_allocation) const;
     unsigned long long get_memory_for_host(const std::string &host) const;
-    unsigned long long get_memory_per_task();
+    unsigned long long get_memory_per_task() const;
     unsigned long long get_swap_for_host(const std::string &host) const;
     unsigned long long get_swap_per_task();
     void          get_task_stats(std::vector<int> &task_index, std::vector<unsigned long> &cput_used,

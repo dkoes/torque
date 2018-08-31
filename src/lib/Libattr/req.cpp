@@ -2491,7 +2491,7 @@ unsigned long long req::get_swap_per_task()
  *
  */
 
-unsigned long long req::get_memory_per_task()
+unsigned long long req::get_memory_per_task() const
 
   {
   return(this->mem);
