@@ -124,7 +124,7 @@ fair_share: false	ALL
 #	until it can run all of the starving jobs.  
 #	PRIME OPTION
 
-help_starving_jobs	true	ALL
+help_starving_jobs	false  ALL
 
 #
 # sort_queues - sort queues by the priority attribute
@@ -153,7 +153,7 @@ load_balancing: false	ALL
 # fair_share large_walltime_first short_walltime_first
 #
 #	PRIME OPTION
-sort_by: shortest_job_first	ALL
+sort_by: no_sort   ALL
 
 # filter out prolific debug messages
 # 256 are DEBUG2 messages 
